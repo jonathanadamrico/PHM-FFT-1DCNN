@@ -8,6 +8,7 @@ import gc
 import pickle
 
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.model_selection import train_test_split
 
 import torch
 torch.cuda.empty_cache()
@@ -16,7 +17,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from utils.functions import get_features, scale_per_sensor
-from utils.classes import CNN_Autoencoder, AutoencoderFC, CNNFeatureExtractor
+from utils.classes import AutoencoderFC, CNNFeatureExtractor, Classifier
 
 TRAIN_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Training data"
 TEST_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Test data"
@@ -27,8 +28,8 @@ AUG_TRAIN_DIR = "Data_Augmentation/Prelim_Train"
 
 EXT_FEAT_DIR = "extracted_features"
 
-load_model = False
-quick_load = False
+load_model = True
+quick_load = True
 quick_load_holdout = True
 quick_load_infer = True
 fs = 64000
@@ -246,7 +247,7 @@ def evaluate_model():
     optimizer = optim.Adam(autoencoder.parameters(), lr=0.001)
 
     if load_model:
-        autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'1dcnn_ae_model_{anomaly_type}.pth', map_location=device))
+        autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_{anomaly_type}.pth', map_location=device))
     else:
         # Training loop
         history = {f"train":[], f"val":[]} 
@@ -268,7 +269,7 @@ def evaluate_model():
                 optimizer.zero_grad()
                 
                 # Forward pass
-                outputs = autoencoder(inputs)
+                outputs, _ = autoencoder(inputs)
 
                 # Compute the loss
                 loss = criterion(outputs, inputs)  # Reconstruction error
@@ -277,122 +278,84 @@ def evaluate_model():
                 # Update the weights
                 optimizer.step()
 
-            print((f"\n Epoch {epoch}/{epochs} | train loss: {loss.item():.4f}"))
+            cnn.eval()
+            autoencoder.eval()
 
-            '''with torch.no_grad():
-                val_inputs = cnn_features.view(cnn(normal_val_data_tensor.to(device)).size(0), -1)
-                val_outputs = model(val_inputs)
-                val_loss = criterion(val_outputs, val_inputs)
-            print((f"\n train loss: {loss.item():.4f} | validation loss: {val_loss.item():.4f}"))
+            with torch.no_grad():  # No need to track gradients during evaluation
+                val_loss = 0
+                for val_batch in val_loader:
+                    val_inputs = val_batch[0].to(device) 
+                    cnn_features = cnn(val_inputs)  # Output shape will be (batch_size, 32, 4000)
+                    cnn_features_flat = cnn_features.view(cnn_features.size(0), -1)  # Flatten to (batch_size, 32 * 4000)
+                    val_outputs, _ = autoencoder(cnn_features_flat)
+                    val_loss += criterion(val_outputs, cnn_features_flat)
+
+            print((f"\n Epoch {epoch}/{epochs} | train loss: {loss.item():.4f} | validation loss: {val_loss.item():.4f}"))
             history[f"train"].append(loss.item())
             history[f"val"].append(val_loss.item())
 
             # save model
             if val_loss.item() <= best_val_loss:
-                torch.save(model.state_dict(), 'saved_models'+'/'+f'1dcnn_ae_model_{anomaly_type}.pth')
+                torch.save(autoencoder.state_dict(), 'saved_models'+'/'+f'autoencoder_{anomaly_type}.pth')
                 best_val_loss = val_loss.item()
 
-        pd.DataFrame(history).to_csv(f"train_history/1dcnn_ae_{anomaly_type}.csv", index=False)'''
+        pd.DataFrame(history).to_csv(f"train_history/autoencoder_{anomaly_type}.csv", index=False)
 
-    # Anomaly detection
 
-    # Set the models to evaluation mode
-    cnn.eval()
-    autoencoder.eval()
+    # Get latent features from the autoencoder for normal and anomalous data
+    autoencoder.eval()  # Set to evaluation mode
+    with torch.no_grad():
+        cnn_features = cnn(val_data_tensor.to(device))
+        cnn_features_flat = cnn_features.view(cnn_features.size(0), -1)
+        _, X_latent = autoencoder(cnn_features_flat)  # Latent features for validation data
 
-    # List to store reconstruction errors for anomaly detection
-    reconstruction_errors = []
+        y_latent = torch.cat((torch.zeros(len(normal_val_data)), torch.ones(len(val_data)-len(normal_val_data))), dim=0)
 
-    # Evaluate on test data
-    with torch.no_grad():  # No need to track gradients during evaluation
-        for val_batch in val_loader:
-            val_inputs = val_batch[0].to(device)  # Get the test input data (assumes test_loader is defined)
-            
-            # Pass the test samples through the CNN feature extractor
-            cnn_features = cnn(val_inputs)  # Output shape will be (batch_size, 32, 4000)
-            
-            # Flatten the CNN output
-            cnn_features_flat = cnn_features.view(cnn_features.size(0), -1)  # Flatten to (batch_size, 32 * 4000)
-            
-            # Pass the flattened features through the fully connected autoencoder
-            reconstructed, _ = autoencoder(cnn_features_flat)
-            
-            # Compute the reconstruction error (Mean Squared Error)
-            reconstruction_error = torch.mean((reconstructed - cnn_features_flat) ** 2, dim=1)
-            
-            # Store the reconstruction error for later analysis
-            reconstruction_errors.extend(reconstruction_error.cpu().numpy())  # Convert to numpy for further analysis
+        X_train_latent, X_val_latent, y_train, y_val = train_test_split(X_latent, y_latent, test_size=0.2, random_state=42)
 
-    # Convert list of reconstruction errors to a numpy array for easier manipulation
-    reconstruction_errors = np.array(reconstruction_errors)
+    # Initialize Classifier model
+    classifier = Classifier(latent_dim=latent_dim).to(device)
 
-    thresholds = np.linspace(np.min(reconstruction_errors), np.max(reconstruction_errors), 400)
+    # Loss and optimizer for the classifier
+    classifier_optimizer = optim.Adam(classifier.parameters(), lr=0.001)
+    classifier_criterion = nn.BCELoss()  # Binary Cross-Entropy loss
 
-    #Initialize variables to store the best threshold and corresponding F1 score
-    best_threshold = None
-    best_z = 0
-    best_f1 = 0
-    best_precision = 0
-    best_recall = 0
-
-    # Initialize lists to store F1 scores and other metrics for plotting
-    z_metrics = []
-    f1_scores = []
-    precisions = []
-    recalls = []
-
-    y_true = np.array(list([0]*len(normal_val_data)) + list([1]*(len(val_data)-len(normal_val_data))))
-
-    # Loop over all thresholds to calculate precision, recall, and F1 score
-    for threshold in thresholds:
-        # Make predictions based on the current threshold
-        y_pred = (reconstruction_errors > threshold).astype(int)  # Predict anomalies (1) or normal (0)
+    # Train the classifier
+    for epoch in range(50):
+        classifier.train()
+        classifier_optimizer.zero_grad()
         
-        # Calculate precision, recall, and F1 score using ground truth labels
-        accuracy = accuracy_score(y_true, y_pred)
-        precision = precision_score(y_true, y_pred)
-        recall = recall_score(y_true, y_pred)
-        f1 = f1_score(y_true, y_pred)
-        z_metric = 0.4*accuracy + 0.2*precision + 0.2*recall + 0.2*f1
-
-        # Track the best F1 score and the corresponding threshold
-        z_metrics.append(z_metric)
-        f1_scores.append(f1)
-        precisions.append(precision)
-        recalls.append(recall)
+        # Forward pass
+        outputs = classifier(X_train_latent)
         
-        if z_metric > best_z:
-            best_z = z_metric
-            best_f1 = f1
-            best_threshold = threshold
-            best_precision = precision
-            best_recall = recall
+        # Compute loss
+        loss = classifier_criterion(outputs.squeeze(), y_train.to(device))
+        
+        # Backpropagation
+        loss.backward()
+        classifier_optimizer.step()
+        
+        if epoch % 10 == 0:
+            print(f'Epoch {epoch}/{50}, Loss: {loss.item()}')
 
-    # Step 4: Print the best threshold and corresponding metrics
-    print(f"Best Threshold: {best_threshold}")
-    print(f"Best Z: {best_z}")
 
-    # Identify anomalies
-    anomalies = reconstruction_errors > best_threshold
+    # Evaluate the classifier on validation data
+    classifier.eval()
+    with torch.no_grad():
+        y_pred = classifier(X_val_latent).squeeze()
+        y_pred = (y_pred > 0.5).float().cpu().numpy()  # Apply threshold at 0.5 for binary classification
+        
+        # Compute metrics
+        accuracy = accuracy_score(y_val, y_pred)
+        precision = precision_score(y_val, y_pred)
+        recall = recall_score(y_val, y_pred)
+        f1 = f1_score(y_val, y_pred)
+        
+        print(f"Accuracy: {accuracy:.4f}")
+        print(f"Precision: {precision:.4f}")
+        print(f"Recall: {recall:.4f}")
+        print(f"F1 Score: {f1:.4f}")
 
-    # Print results (indices of anomalous samples)
-    print(f"Detected anomalies: {np.where(anomalies)[0]}")
-
-    # Optionally, calculate the percentage of anomalies
-    anomaly_percentage = 100 * np.sum(anomalies) / len(anomalies)
-    print(f"Percentage of anomalies detected: {anomaly_percentage:.2f}%")
-
-    # Plot
-    plt.figure(figsize=(10, 6))
-    plt.hist(reconstruction_errors, bins=50, color='skyblue', alpha=0.7, label='Reconstruction Errors')
-    plt.axvline(x=best_threshold, color='red', linestyle='--', label=f'Best Threshold')
-
-    # Add labels and title
-    plt.xlabel('Reconstruction Error')
-    plt.ylabel('Frequency')
-    plt.title('Histogram of Reconstruction Errors with Anomaly Detection Threshold')
-    plt.legend()
-    plt.savefig('reconstruction_errors_with_threshold.png', dpi=300) 
 
 evaluate_model()
 
