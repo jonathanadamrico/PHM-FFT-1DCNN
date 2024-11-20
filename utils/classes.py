@@ -217,3 +217,19 @@ class CNN_Autoencoder(nn.Module):
         reconstructed = self.autoencoder(cnn_features)
         
         return reconstructed
+
+
+# Classifier Model (Fully Connected for Normal/Anomaly Classification)
+class Classifier(nn.Module):
+    def __init__(self, latent_dim):
+        super(Classifier, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(latent_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(p=0.4),
+            nn.Linear(64, 1),
+            nn.Sigmoid()  # Sigmoid for binary classification
+        )
+    
+    def forward(self, x):
+        return self.fc(x)
