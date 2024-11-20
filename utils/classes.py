@@ -143,3 +143,77 @@ class ConvNet(nn.Module):
         x = self.sigmoid(x)
         return x
     
+
+
+class CNNFeatureExtractor(nn.Module):
+    def __init__(self, input_channels, input_length):
+        super(CNNFeatureExtractor, self).__init__()
+        self.conv1 = nn.Conv1d(input_channels, 128, kernel_size=3, stride=1, padding=1)  # (21, 32000) -> (128, 32000)
+        self.relu1 = nn.ReLU()
+        self.pool1 = nn.MaxPool1d(kernel_size=2, stride=2)  # (128, 32000) -> (128, 16000)
+        
+        self.conv2 = nn.Conv1d(128, 64, kernel_size=3, stride=1, padding=1)  # (64, 16000)
+        self.relu2 = nn.ReLU()
+        self.pool2 = nn.MaxPool1d(kernel_size=2, stride=2)  # (64, 16000) -> (64, 8000)
+        
+        self.conv3 = nn.Conv1d(64, 32, kernel_size=3, stride=1, padding=1)  # (32, 8000)
+        self.relu3 = nn.ReLU()
+        self.pool3 = nn.MaxPool1d(kernel_size=2, stride=2)  # (32, 8000) -> (32, 4000)
+        
+    def forward(self, x):
+        x = self.relu1(self.conv1(x))
+        x = self.pool1(x)
+        
+        x = self.relu2(self.conv2(x))
+        x = self.pool2(x)
+        
+        x = self.relu3(self.conv3(x))
+        x = self.pool3(x)
+        
+        return x  # Output from CNN feature extractor (shape: [batch_size, 32, 4000])
+
+
+class AutoencoderFC(nn.Module):
+    def __init__(self, input_size, latent_dim):
+        super(AutoencoderFC, self).__init__()
+        self.fc1 = nn.Linear(input_size, 512)  # First fully connected layer
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Linear(512, latent_dim)  # Latent space
+        self.fc3 = nn.Linear(latent_dim, 512)  # Decoder starts here
+        self.relu2 = nn.ReLU()
+        self.fc4 = nn.Linear(512, input_size)  # Output layer to match original input size
+        
+    def forward(self, x):
+        x = self.relu1(self.fc1(x))
+        latent = self.fc2(x)
+        
+        x = self.relu2(self.fc3(latent))
+        x = self.fc4(x)
+        
+        return x, latent
+
+
+class CNN_Autoencoder(nn.Module):
+    def __init__(self, input_channels, input_length, latent_dim):
+        super(CNN_Autoencoder, self).__init__()
+        
+        # CNN feature extractor
+        self.cnn = CNNFeatureExtractor(input_channels, input_length)
+        
+        # Latent dimension size after CNN processing (calculate based on pooling)
+        cnn_output_size = 32 * (input_length // 8)  # (32 channels, length reduced by 8 due to 3 pooling layers)
+        
+        # Fully connected autoencoder
+        self.autoencoder = AutoencoderFC(cnn_output_size, latent_dim)
+        
+    def forward(self, x):
+        # Pass through CNN feature extractor
+        cnn_features = self.cnn(x)
+        
+        # Flatten CNN features
+        cnn_features = cnn_features.view(cnn_features.size(0), -1)  # Flatten to (batch_size, cnn_output_size)
+        
+        # Pass through fully connected layers of the autoencoder
+        reconstructed = self.autoencoder(cnn_features)
+        
+        return reconstructed
