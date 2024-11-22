@@ -1,14 +1,18 @@
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 import os
 import sys
 
 from sklearn.preprocessing import MinMaxScaler
 
+from scipy.fft import fft, fftfreq
+
 TRAIN_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Training data"
 TEST_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Test data"
+NEW_TEST_DIR = "Prelim Test reorganized/Test reorganized"
 FINAL_TRAIN_DIR = "Data_Final_Stage/Data_Final_Stage/Training"
 FINAL_TEST_DIR = "Data_Final_Stage/Data_Final_Stage/Test_Final_round8/Test"
 AUG_TRAIN_DIR = "Data_Augmentation/Prelim_Train"
@@ -115,6 +119,21 @@ def get_tabular_features(fault_type, sample_n, folder_name='', test=False, final
     
     return feat_list
 
+def df_to_numpy(df, num_samples, num_channels, sample_size):
+    '''
+    Manually split and reshape the data without mixing the columns
+    '''
+    data = df.to_numpy()
+    reshaped_data = []
+    for i in range(num_samples):
+        sample = []
+        for j in range(num_channels):
+            # For each channel, slice the appropriate rows (sample_size datapoints)
+            sample.append(data[i * sample_size: (i + 1) * sample_size, j])
+        reshaped_data.append(sample)
+    
+    return np.array(reshaped_data)
+
 # Get data from all features
 def get_features(components, fault_type, sample_n, n_datapoints, folder_name=''):
     '''
@@ -138,14 +157,12 @@ def get_features(components, fault_type, sample_n, n_datapoints, folder_name='')
     
     df, n_datapoints  = fft_preprocessing(df, fs=fs)
     
-    # Get tabular features, this becomes the 22nd column
-    #df['tabular'] = get_tabular_features(fault_type, sample_n, folder_name=folder_name)
-
     n_samples = int(len(df) / n_datapoints)
     n_features = len(df.columns)
     df = reduce_mem_usage(df, verbose=False)
-    data_arr = df.to_numpy()
-    data_arr = data_arr.reshape(n_samples, n_features, n_datapoints)
+    '''data_arr = df.to_numpy()
+    data_arr = data_arr.reshape(n_samples, n_features, n_datapoints)'''
+    data_arr = df_to_numpy(df, n_samples, n_features, n_datapoints)
     return data_arr
 
 
@@ -171,14 +188,42 @@ def get_test_features(components, sample_n, n_datapoints, anomaly_type, final_st
 
     df, n_datapoints = fft_preprocessing(df, fs=fs, test=True)
 
-    # Get tabular features, this becomes the 22nd column
-    #df['tabular'] = get_tabular_features(fault_type, sample_n, final_stage=final_stage, test=True, window=window)
+    n_samples = int(len(df) / n_datapoints)
+    n_features = len(df.columns)
+    df = reduce_mem_usage(df, verbose=False)
+    '''data_arr = df.to_numpy()
+    data_arr = data_arr.reshape(n_samples, n_features, n_datapoints)'''
+    data_arr = df_to_numpy(df, n_samples, n_features, n_datapoints)
+    return data_arr
+
+# Get data from all test features
+def get_new_test_features(components, sample_n, n_datapoints, fault_type, final_stage=False, window=1):
+    '''
+    returns an array of shape (n_samples, n_features, n_datapoints)
+    '''
+    df = pd.DataFrame()
+    fs = n_datapoints
+    for component in components:
+        if final_stage:
+            data_df = pd.read_csv(f"{FINAL_TEST_DIR}/{sample_n}/data_{component}.csv")
+        else:
+            data_df = pd.read_csv(f"{NEW_TEST_DIR}/{fault_type}/{sample_n}/data_{component}.csv")
+  
+        df = pd.concat([df, data_df], axis=1)
+    
+    df = df.loc[(window-1)*fs:(window)*fs].reset_index(drop=True)
+
+    #if fault_type == "TYPE1":
+    #    df = df[["CH7","CH8","CH9"]]
+
+    df, n_datapoints = fft_preprocessing(df, fs=fs, test=True)
 
     n_samples = int(len(df) / n_datapoints)
     n_features = len(df.columns)
     df = reduce_mem_usage(df, verbose=False)
-    data_arr = df.to_numpy()
-    data_arr = data_arr.reshape(n_samples, n_features, n_datapoints)
+    '''data_arr = df.to_numpy()
+    data_arr = data_arr.reshape(n_samples, n_features, n_datapoints)'''
+    data_arr = df_to_numpy(df, n_samples, n_features, n_datapoints)
     return data_arr
 
 # Data scaling for each sensor
@@ -188,7 +233,40 @@ def get_test_features(components, sample_n, n_datapoints, anomaly_type, final_st
 def scale_per_sensor(data_):
     data = data_.copy()
     for i in range(0,data.shape[0]):
-        for j in range(0,data.shape[1]-3,3):
+        for j in range(0,data.shape[1]-2,3):
             scaler = MinMaxScaler((0,1))
-            data[i,j:j+3,:] = scaler.fit_transform(data[i,j:j+3,:])
+            data[i,j:j+3,:] = scaler.fit_transform(data[i,j:j+3,:].T).T
     return data
+
+def scale_per_sensor_2d(data_):
+    data = data_.copy()
+    for j in range(0,data.shape[0]-2,3):
+        scaler = MinMaxScaler((0,1))
+        data[j:j+3,:] = scaler.fit_transform(data[j:j+3,:].T).T
+    return data
+
+def round_to_nearest(num, pool):
+    # Find the value in the pool that has the smallest absolute difference to 'num'
+    print("round to nearest:",num, min(pool, key=lambda x: abs(x - num)))
+    return min(pool, key=lambda x: abs(x - num))
+
+def get_fundamental_frequency(fft_signal_, sampling_rate):
+    """
+    Calculate the fundamental frequency of a signal using FFT.
+    
+    :param signal: Input fft of signal (pandas series).
+    :param sampling_rate: The sampling rate of the signal (Hz).
+    :return: The fundamental frequency (Hz).
+    """
+    fft_signal = np.array(fft_signal_)
+    # Perform FFT to get frequency components
+    fft_signal = np.pad(fft_signal, (0, 1), mode='constant', constant_values=0)
+    signal = np.fft.irfft(fft_signal)
+    N = len(signal)
+    freqs = fftfreq(N, d=1/sampling_rate)[:N // 2]  # Frequency range (only positive frequencies)
+    fft_values = np.abs(fft(signal))[:N // 2]  # FFT magnitude (only positive frequencies)
+    # Find the peak frequency (fundamental frequency)
+    fundamental_freq_idx = np.argmax(fft_values)  # Index of the max peak
+    fundamental_frequency = freqs[fundamental_freq_idx]
+
+    return fundamental_frequency
