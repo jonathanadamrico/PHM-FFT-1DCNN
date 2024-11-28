@@ -30,7 +30,7 @@ AUG_TRAIN_DIR = "Data_Augmentation/Prelim_Train"
 
 EXT_FEAT_DIR = "extracted_features"
 
-load_model = True
+load_model = False
 quick_load = True
 quick_load_holdout = True
 quick_load_infer = True
@@ -248,7 +248,7 @@ normal_val_data = X_val[y_val.flatten() == 0]
 print(f"Train-Val shape", normal_data.shape, normal_val_data.shape)
 
 
-# Convert to PyTorch tensors (add batch dimension)
+'''# Convert to PyTorch tensors (add batch dimension)
 normal_data_tensor = torch.tensor(normal_data)
 normal_val_data_tensor = torch.tensor(normal_val_data)
 
@@ -260,13 +260,19 @@ val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
 # Free some memory
 del normal_data, normal_val_data
-gc.collect()
+gc.collect()'''
 
 # fit and evaluate a model using pytorch
 def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(device, torch.cuda.get_device_name(0))
-    verbose, epochs = 1, 20
+    verbose, epochs, batch_size = 1, 20, 32
+
+    # Convert data to torch tensor
+    X_train = torch.tensor(X_train, dtype=torch.float32).to(device)
+    y_train = torch.tensor(y_train, dtype=torch.float32).to(device)
+    X_val = torch.tensor(X_val, dtype=torch.float32).to(device)
+    y_val = torch.tensor(y_val, dtype=torch.float32).to(device)
 
     # Instantiate the model
     input_channels = n_features  # Number of channels
@@ -279,26 +285,48 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     #autoencoder = ConvAutoencoder(input_channels=n_features, input_length=n_timesteps, latent_dim=latent_dim).to(device)
     cnn = CNNFeatureExtractor(input_channels, input_length).to(device)
     
-    # Loss function and optimizer
+    # class weights for imbalanced data
+    weight_for_0 = torch.tensor(1.0 / normal_len, dtype=torch.float32).to(device)
+    weight_for_1 = torch.tensor(1.0 / anomaly_len, dtype=torch.float32).to(device)
+    class_weights = torch.tensor([weight_for_0, weight_for_1]).to(device)
+
+    # Initialize Classifier model
+    classifier = Classifier(latent_dim=latent_dim).to(device)
+
+    # Loss and optimizer for the classifier
+    pos_weight = class_weights[1] / class_weights[0]  # Calculate the positive weight
+    classifier_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(autoencoder.parameters(), lr=1e-3)
+    lr_decay_rate = 0.1
+    lr_decay_steps = 10000
+    optimizer = optim.SGD(list(autoencoder.parameters())+list(classifier.parameters()), lr=1e-4, momentum=0.9, nesterov=True)
+    scheduler = ExponentialLR(optimizer, lr_decay_rate**(1.0 / lr_decay_steps))
+    lambda_reconstruction = 0.01
 
     if load_model:
         autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_{anomaly_type}.pth', weights_only=False, map_location=device))
     else:
+
         # Training loop
         history = {f"train":[], f"val":[]} 
         best_val_loss = 999
         for epoch in range(epochs):
             cnn.train()
             autoencoder.train()
+            classifier.train()
             train_loss = 0
+
+            # Shuffle both arrays using the same permutation
+            permutation_train = np.random.permutation(len(X_train))
+            X_train = X_train[permutation_train]
+            y_train = y_train[permutation_train]
             # Iterate over batches
-            for batch in train_loader:
-                x = batch[0].to(device)
+            for i in range(0, len(X_train), batch_size):
+                batch_X = X_train[i:i+batch_size]
+                batch_y = y_train[i:i+batch_size]
 
                 # Pass through CNN feature extractor
-                cnn_features = cnn(x)
+                cnn_features = cnn(batch_X)
                     
                 # Flatten CNN features
                 inputs = cnn_features.view(cnn_features.size(0), -1)  # Flatten to (batch_size, cnn_output_size)
@@ -307,24 +335,26 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
                 optimizer.zero_grad()
                 
                 # Forward pass
-                outputs, _ = autoencoder(inputs)
+                outputs, latent = autoencoder(inputs)
+                logits = classifier(latent)
 
-                # Compute the loss
-                loss = criterion(outputs, inputs)  # Reconstruction error
+                # Compute the loss = reconstruction loss + classification loss
+                loss = criterion(outputs, inputs)  + lambda_reconstruction * classifier_criterion(logits, batch_y)
                 loss.backward()
                 train_loss += loss
                 
                 # Update the weights
                 optimizer.step()
+                scheduler.step()
 
             cnn.eval()
             autoencoder.eval()
 
             with torch.no_grad():  # No need to track gradients during evaluation
-                val_loss = 0
-                for val_batch in val_loader:
-                    val_inputs = val_batch[0].to(device) 
-                    cnn_features = cnn(val_inputs)  
+                val_loss = 0 
+                for i in range(0, len(X_val), batch_size):
+                    batch_X = X_val[i:i+batch_size]
+                    cnn_features = cnn(batch_X)  
                     cnn_features_flat = cnn_features.view(cnn_features.size(0), -1) 
                     val_outputs, _ = autoencoder(cnn_features_flat)
                     val_loss += criterion(val_outputs, cnn_features_flat)
@@ -346,11 +376,6 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_{anomaly_type}.pth', weights_only=False, map_location=device))
     cnn.eval()
     autoencoder.eval()  # Set to evaluation mode
-
-    X_train = torch.tensor(X_train, dtype=torch.float32).to(device)
-    y_train = torch.tensor(y_train, dtype=torch.float32).to(device)
-    X_val = torch.tensor(X_val, dtype=torch.float32).to(device)
-    y_val = torch.tensor(y_val, dtype=torch.float32).to(device)
 
     # class weights for imbalanced data
     weight_for_0 = torch.tensor(1.0 / normal_len, dtype=torch.float32).to(device)
@@ -376,8 +401,12 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     for epoch in range(epochs):
         classifier.train()
         classifier_optimizer.zero_grad()
-
         train_loss = 0
+        
+        # Shuffle both arrays using the same permutation
+        permutation_train = np.random.permutation(len(X_train))
+        X_train = X_train[permutation_train]
+        y_train = y_train[permutation_train]
         # Iterate over batches
         for i in range(0, len(X_train), batch_size):
             batch_X = X_train[i:i+batch_size]
