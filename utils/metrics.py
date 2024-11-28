@@ -112,7 +112,7 @@ def calc_overall_metric(true_labels:iter, pred_labels:iter, all_labels=fault_lab
     precision = precision_score(TP_count, FP_count)
     recall = recall_score(TP_count, FN_count)
     f1 = f1_score(precision, recall)
-    return z_metric(accuracy, precision, recall, f1)
+    return accuracy, precision, recall, f1, z_metric(accuracy, precision, recall, f1)
 
 '''def calc_overall_metric(true_labels:iter, pred_labels:iter, all_labels=fault_labels, component=None, test_set=False):
     assert len(true_labels) == len(pred_labels)

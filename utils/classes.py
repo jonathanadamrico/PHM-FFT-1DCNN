@@ -74,18 +74,18 @@ class Autoencoder(nn.Module):
         return x
 
 class DeepAutoencoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim):
+    def __init__(self, input_dim, hidden_dims):
         super(DeepAutoencoder, self).__init__()
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim[0]),
+            nn.Linear(input_dim, hidden_dims[0]),
             nn.ReLU(True), 
-            nn.Linear(hidden_dim[0], hidden_dim[1]),
+            nn.Linear(hidden_dims[0], hidden_dims[1]),
             nn.ReLU(True) 
         )
         self.decoder = nn.Sequential(
-            nn.Linear(hidden_dim[1], hidden_dim[0]),
+            nn.Linear(hidden_dims[1], hidden_dims[0]),
             nn.ReLU(True),
-            nn.Linear(hidden_dim[0], input_dim),
+            nn.Linear(hidden_dims[0], input_dim),
             nn.ReLU(True)
         )
 
@@ -97,9 +97,11 @@ class DeepAutoencoder(nn.Module):
 class ConvNet(nn.Module):
     def __init__(self, n_timesteps, n_features):
         super(ConvNet, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels=n_features, out_channels=64, kernel_size=3)
-        self.conv2 = nn.Conv1d(in_channels=64, out_channels=64, kernel_size=3)
-        self.dropout1 = nn.Dropout(p=0.55)
+        self.conv1 = nn.Conv1d(in_channels=n_features, out_channels=128, kernel_size=3)
+        #self.dropout1 = nn.Dropout(p=0.4)
+        #self.maxpool = nn.MaxPool1d(kernel_size=2)
+        self.conv2 = nn.Conv1d(in_channels=128, out_channels=64, kernel_size=3)
+        self.dropout2 = nn.Dropout(p=0.55)
         self.maxpool = nn.MaxPool1d(kernel_size=2)
         # Calculate the output size after convolutions and pooling
         self.flatten_output_size = self.calculate_flatten_output_size(n_timesteps, n_features)
@@ -110,7 +112,7 @@ class ConvNet(nn.Module):
 
         #self.fc1 = nn.Linear(self.flatten_output_size, 16)
         self.fc1 = nn.Linear(hidden_dims[-1], hidden_dims[-1])
-        self.dropout2 = nn.Dropout(p=0.6) #
+        self.dropout3 = nn.Dropout(p=0.6) #
         self.fc2 = nn.Linear(hidden_dims[-1], 1)
         self.sigmoid = nn.Sigmoid()
 
@@ -119,9 +121,11 @@ class ConvNet(nn.Module):
         x = torch.randn(1, n_features, n_timesteps)  # input shape (batch_size, in_channels, sequence_length)
         x = self.conv1(x)
         x = torch.tanh(x)
+        #x = self.dropout1(x)
+        #x = self.maxpool(x)
         x = self.conv2(x)
         x = torch.tanh(x)
-        x = self.dropout1(x)
+        x = self.dropout2(x)
         x = self.maxpool(x)
         flatten_size = x.view(x.size(0), -1).size(1)
         return flatten_size
@@ -129,16 +133,18 @@ class ConvNet(nn.Module):
     def forward(self, x):
         x = self.conv1(x)
         x = torch.tanh(x)
+        #x = self.dropout1(x)
+        #x = self.maxpool(x)
         x = self.conv2(x)
         x = torch.tanh(x)
-        x = self.dropout1(x)
+        x = self.dropout2(x)
         x = self.maxpool(x)
         x = x.view(x.size(0), -1)
         # Pass through the autoencoder
         x = self.autoencoder(x)
         x = self.fc1(x)
         x = torch.tanh(x)
-        x = self.dropout2(x)
+        x = self.dropout3(x)
         x = self.fc2(x)
         x = self.sigmoid(x)
         return x
@@ -146,7 +152,7 @@ class ConvNet(nn.Module):
 
 
 class CNNFeatureExtractor(nn.Module):
-    def __init__(self, input_channels, input_length):
+    '''def __init__(self, input_channels, input_length):
         super(CNNFeatureExtractor, self).__init__()
         self.conv1 = nn.Conv1d(input_channels, 128, kernel_size=3, stride=1, padding=1)  # (21, 32000) -> (128, 32000)
         self.relu1 = nn.ReLU()
@@ -170,7 +176,25 @@ class CNNFeatureExtractor(nn.Module):
         x = self.relu3(self.conv3(x))
         x = self.pool3(x)
         
-        return x  # Output from CNN feature extractor (shape: [batch_size, 32, 4000])
+        return x  # Output from CNN feature extractor (shape: [batch_size, 32, 4000])'''
+    def __init__(self, input_channels, input_length):
+        super(CNNFeatureExtractor, self).__init__()
+        self.conv1 = nn.Conv1d(input_channels, 128, kernel_size=3, stride=1, padding=1)
+        self.tanh1 = nn.Tanh()
+        
+        self.conv2 = nn.Conv1d(128, 64, kernel_size=3, stride=1, padding=1)
+        self.tanh2 = nn.Tanh()
+        self.dropout = nn.Dropout(p=0.55)
+        self.pool1 = nn.MaxPool1d(kernel_size=2, stride=2) 
+        
+    def forward(self, x):
+        x = self.tanh1(self.conv1(x))
+        
+        x = self.tanh2(self.conv2(x))
+        x = self.dropout(x)
+        x = self.pool1(x)
+        
+        return x 
 
 
 class AutoencoderFC(nn.Module):
@@ -192,6 +216,26 @@ class AutoencoderFC(nn.Module):
         
         return x, latent
 
+class AutoencoderFC_flatten(nn.Module):
+    def __init__(self, input_dim, latent_dim):
+        super(AutoencoderFC_flatten, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 16),
+            nn.ReLU(True),
+            nn.Linear(16, latent_dim)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 16),
+            nn.ReLU(True),
+            nn.Linear(16, input_dim)
+        )
+
+    def forward(self, x):
+        # Flatten the input
+        x = x.view(x.size(0), -1)  # Flatten the input to (batch_size, input_dim)
+        latent = self.encoder(x)
+        reconstructed = self.decoder(latent)
+        return reconstructed, latent
 
 class CNN_Autoencoder(nn.Module):
     def __init__(self, input_channels, input_length, latent_dim):
@@ -224,12 +268,47 @@ class Classifier(nn.Module):
     def __init__(self, latent_dim):
         super(Classifier, self).__init__()
         self.fc = nn.Sequential(
-            nn.Linear(latent_dim, 64),
-            nn.ReLU(),
-            nn.Dropout(p=0.4),
-            nn.Linear(64, 1),
+            nn.Linear(latent_dim, 32),
+            nn.ReLU(True),
+            nn.Linear(32, 16),
+            nn.ReLU(True),
+            nn.Linear(16, 16),
+            nn.Tanh(),
+            nn.Dropout(p=0.6),
+            nn.Linear(16, 1),
             nn.Sigmoid()  # Sigmoid for binary classification
         )
     
     def forward(self, x):
         return self.fc(x)
+    
+
+class ConvAutoencoder(nn.Module):
+    def __init__(self, input_channels, input_length, latent_dim):
+        super(ConvAutoencoder, self).__init__()
+
+        # Encoder (1D convolutions)
+        self.encoder = nn.Sequential(
+            nn.Conv1d(input_channels, 32, kernel_size=3, stride=1, padding=1),  # Output: (32, input_length/2)
+            nn.ReLU(),
+            nn.Conv1d(32, 64, kernel_size=3, stride=1, padding=1),  # Output: (64, input_length/4)
+            nn.ReLU(),
+            nn.Conv1d(64, latent_dim, kernel_size=3, stride=1, padding=1),  # Output: (latent_dim, input_length/8)
+            nn.ReLU()
+        )
+        
+        # Decoder (1D deconvolutions)
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose1d(latent_dim, 64, kernel_size=3, stride=1, padding=1),  # Output: (64, input_length/4)
+            nn.ReLU(),
+            nn.ConvTranspose1d(64, 32, kernel_size=3, stride=1, padding=1),  # Output: (32, input_length/2)
+            nn.ReLU(),
+            nn.ConvTranspose1d(32, input_channels, kernel_size=3, stride=1, padding=1),  # Output: (input_channels, input_length)
+            nn.Sigmoid()  # To match the input range
+        )
+
+    def forward(self, x):
+        # Pass through the encoder and decoder
+        latent = self.encoder(x)
+        x = self.decoder(latent)
+        return x, latent
