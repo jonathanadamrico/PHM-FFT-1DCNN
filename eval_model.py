@@ -83,7 +83,11 @@ df2 = pd.read_csv('Data_Final_Stage/Data_Final_Stage/true_labels_round8.csv')
 true_labels = pd.read_csv("Preliminary stage/Test_Labels_prelim.csv")
 true_labels = true_labels["FaultCode"]
 if sys.argv[1] == 'final':
-    true_labels = df2[df2['New Sample']=='NO']['Label']
+    true_labels = df2[df2['New Sample']=='NO']['Label'].values.tolist()
 pred_labels = df.loc[:len(true_labels)-1,"label"].values.tolist()
-overall_z = calc_overall_metric(true_labels, pred_labels, test_set=bool(sys.argv[1] == 'test'))
-print(f"{sys.argv[1]} | Z={overall_z:.4f}")
+print(len(true_labels), len(pred_labels))
+df = df[:len(true_labels)][['sample','label']].copy()
+df['true_labels']= true_labels
+df.to_csv("pred_labels.csv", index=False)
+accuracy, precision, recall, f1, overall_z = calc_overall_metric(true_labels, pred_labels, test_set=bool(sys.argv[1] == 'test'))
+print(f"{sys.argv[1]} | Acc={accuracy:.4f} | Pre={precision:.4f} | Rec={recall:.4f} | F1={f1:.4f} | Z={overall_z:.4f}")

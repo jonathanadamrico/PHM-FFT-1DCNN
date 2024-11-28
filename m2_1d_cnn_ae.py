@@ -19,8 +19,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau, ExponentialLR
 
-from utils.functions import get_features, scale_per_sensor
-from utils.classes import EarlyStopping, ConvNet
+from utils.functions import get_features, scale_per_sensor, scale_per_sensor_2d, scale_per_sample, round_to_nearest, get_fundamental_frequency
+from utils.classes import EarlyStopping, ConvNet, ConvAutoencoder
 
 TRAIN_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Training data"
 TEST_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Test data"
@@ -33,9 +33,9 @@ EXT_FEAT_DIR = "extracted_features"
 
 load_model = False
 quick_load = True
-quick_load_holdout = True
-quick_load_infer = True
 fs = 64000
+n_features = 21
+n_timesteps = fs // 2
 anomaly_type = sys.argv[1] 
 print(anomaly_type)
 SEED = 163
@@ -103,11 +103,11 @@ baselines_faults = {
     "RA0":["all"],
 }
 
-components = component_channels.keys()
+components = ("motor","gearbox","leftaxlebox","rightaxlebox")
 final_train_labels = [item for item in os.listdir(FINAL_TRAIN_DIR) if os.path.isdir(os.path.join(FINAL_TRAIN_DIR,item))]
 test_labels = pd.read_csv("Preliminary stage/Test_Labels_prelim.csv")
 
-
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #========================#
 #
@@ -121,8 +121,8 @@ if quick_load:
     X_val = np.load(f"Quick imports/X_val_ae_{anomaly_type}.npy")
     y_val = np.load(f"Quick imports/y_val_ae_{anomaly_type}.npy")
     print(X_train.shape, y_train.shape, X_val.shape, y_val.shape)
-else:
 
+else:
     # For normal types from prelim stage
     normal_arr = None
     for n_fault_type in tqdm(range(0,17)):
@@ -132,14 +132,13 @@ else:
         
         for n_sample in range(1,4):
             sample_n = f"Sample{n_sample}"
-            normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, n_datapoints=fs)
+            normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs)  
             if len(normal_temp) == 0:
                 continue
             if type(normal_arr) == type(None):
                 normal_arr = normal_temp.copy()
             else:
                 normal_arr = np.vstack([normal_arr, normal_temp])  
-            
 
     # For normal types from final stage
     for folder_name in tqdm(final_train_labels):
@@ -147,7 +146,7 @@ else:
             total_samples = len(os.listdir(os.path.join(FINAL_TRAIN_DIR,folder_name)))
             for n_sample in range(1,total_samples+1):
                 sample_n = f"Sample_{n_sample}"
-                normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, n_datapoints=fs, folder_name=folder_name)
+                normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs, folder_name=folder_name)
                 if len(normal_temp) == 0:
                         continue
                 if type(normal_arr) == type(None):
@@ -155,14 +154,13 @@ else:
                 else:
                     normal_arr = np.vstack([normal_arr, normal_temp])
             
-
     # For anomalous types from prelim stage
     anomaly_arr = None
     for n_sample in tqdm(range(1,4)):
         if anomaly_type == "TYPE17":
             break
         sample_n = f"Sample{n_sample}"
-        anomaly_temp = get_features(components, fault_type=anomaly_type, sample_n=sample_n, n_datapoints=fs)
+        anomaly_temp = get_features(components, fault_type=anomaly_type, sample_n=sample_n, fs=fs)
         if len(anomaly_temp) == 0:
                 continue
         if type(anomaly_arr) == type(None):
@@ -174,7 +172,7 @@ else:
     '''if anomaly_type in ["TYPE12"]:
         for n_sample in tqdm(range(1,4)):
             sample_n = f"Sample{n_sample}"
-            anomaly_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, n_datapoints=fs, folder_name='augmentation')
+            anomaly_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs, folder_name='augmentation')
             if len(anomaly_temp) == 0:
                     continue
             else:
@@ -186,7 +184,7 @@ else:
             total_samples = len(os.listdir(os.path.join(FINAL_TRAIN_DIR,folder_name)))
             for n_sample in range(1,total_samples+1):
                 sample_n = f"Sample_{n_sample}"
-                anomaly_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, n_datapoints=fs, folder_name=folder_name)
+                anomaly_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs, folder_name=folder_name)
                 if len(anomaly_temp) == 0:
                         continue
                 if type(anomaly_arr) == type(None):
@@ -238,27 +236,67 @@ permutation_train = np.random.permutation(len(X_train))
 X_train = X_train[permutation_train]
 y_train = y_train[permutation_train]
 
+# Remove different speed effects using autoencoder
+def remove_speedfx(data_):
+    data = data_.copy()
+    for i in range(len(data)):
+        positive_magnitude = data[i,7,:] # CH8
+        fundamental_frequency = get_fundamental_frequency(positive_magnitude, fs)
+        fundamental_frequency = round_to_nearest(fundamental_frequency, [20,40,60])
+        data[i,:,:] = scale_per_sample(data[i,:,:])
+        if fundamental_frequency == 20:
+            continue
+        
+        # instantiate autoencoders 
+        autoencoder_40Hz = ConvAutoencoder(input_channels=n_features, input_length=n_timesteps, latent_dim=256).to(device)
+        autoencoder_60Hz = ConvAutoencoder(input_channels=n_features, input_length=n_timesteps, latent_dim=256).to(device)
+
+        # load pretrained weights of the autoencoder models
+        autoencoder_40Hz.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_40Hz.pth', map_location=device, weights_only=False))
+        autoencoder_60Hz.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_60Hz.pth', map_location=device, weights_only=False))
+
+        if fundamental_frequency == 40:
+            data[i,:,:] = autoencoder_40Hz(torch.tensor(data[i,:,:], dtype=torch.float32).to(device)).detach().cpu().numpy()
+        if fundamental_frequency == 60:
+            data[i,:,:] = autoencoder_60Hz(torch.tensor(data[i,:,:], dtype=torch.float32).to(device)).detach().cpu().numpy()
+    return data
+
+plt.plot(X_train[1,0,:])
+plt.savefig('X_train.png')
+plt.clf()
+
+plt.plot(X_val[1,0,:])
+plt.savefig('X_val.png')
+plt.clf()
+
+#X_train = remove_speedfx(X_train)
+#X_val = remove_speedfx(X_val)
+
+# Data scaling for each sample
+#X_train = scale_per_sample(X_train)
+#X_val = scale_per_sample(X_val)
+
 # Data scaling
-'''scalers = []
+scalers = []
 for n_scaler in range(X_train.shape[1]):
     scaler = MinMaxScaler((0,1))
     X_train[:,n_scaler,:] = scaler.fit_transform(X_train[:,n_scaler,:])
     X_val[:,n_scaler,:] = scaler.transform(X_val[:,n_scaler,:])
     scalers.append(scaler)
-    pickle.dump(scaler, open(f'saved_scalers/scaler_ae_{anomaly_type}_{n_scaler}', 'wb'))'''
 
-# Data scaling for each sensor
-# Idea: each tri-axial sensor should have the same scaling regardless of speed and lateral load.
-# This way, we don't need to store and retrieve scalers.
-# loop through each sample i and each tri-axial sensor j to j+3 [i,j:j+3,:]
-X_train = scale_per_sensor(X_train)
-X_val = scale_per_sensor(X_val)
+plt.plot(X_train[1,0,:])
+plt.savefig('X_train_scaled.png')
+plt.clf()
+
+plt.plot(X_val[1,0,:])
+plt.savefig('X_val_scaled.png')
+plt.clf()
 
 # fit and evaluate a model using pytorch
 def evaluate_model(trainX, trainy, valX, valy):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     print(device, torch.cuda.get_device_name(0))
-    verbose, epochs, batch_size = 1, 100, 32
+    verbose, epochs, batch_size = 1, 200, 32
     n_timesteps, n_features, n_outputs = trainX.shape[2], trainX.shape[1], trainy.shape[1]
     
     trainX = torch.tensor(trainX, dtype=torch.float32).to(device)
@@ -282,11 +320,9 @@ def evaluate_model(trainX, trainy, valX, valy):
     # Define optimizer and loss function
     pos_weight = class_weights[1] / class_weights[0]  # Calculate the positive weight
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    #optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    #scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.01, patience=2)
     lr_decay_rate = 0.1
     lr_decay_steps = 10000
-    optimizer = optim.SGD(model.parameters(), lr=1e-4, momentum=0.9, nesterov=True)
+    optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.9, nesterov=True)
     scheduler = ExponentialLR(optimizer, lr_decay_rate**(1.0 / lr_decay_steps))
     early_stopping = EarlyStopping(tolerance=20, min_delta=10)
 
@@ -325,61 +361,11 @@ def evaluate_model(trainX, trainy, valX, valy):
             history[f"train"].append(loss.item())
             history[f"val"].append(val_loss.item())
 
-            # Holdout test set
-            #quick_load_holdout = True
-            '''predictions_prelim = []
-            for n_sample in range(1,103):
-                sample_n = f"Sample{n_sample}"
-
-                if quick_load_holdout:
-                    X_test = np.load(f"Quick imports/X_holdout_ae_{sample_n}.npy")
-                    if anomaly_type == "TYPE1":
-                        X_test = get_test_features(components, sample_n=sample_n, n_datapoints=fs)
-                else:
-                    X_test = get_test_features(components, sample_n=sample_n, n_datapoints=fs)
-                    if anomaly_type != "TYPE1":
-                        np.save(f"Quick imports/X_holdout_ae_{sample_n}.npy", X_test)
-
-                for n_scaler in range(X_test.shape[1]):
-                    X_test[:,n_scaler,:] = scalers[n_scaler].transform(X_test[:,n_scaler,:])
-                X_test = torch.tensor(X_test, dtype=torch.float32).to(device)
-
-                # Evaluation
-                model.eval()
-                with torch.no_grad():
-                    preds = model(X_test).cpu().numpy()
-                predictions_prelim.append(preds[0][0])'''
-
-            # Calculate test performance
-            '''true = (test_labels["FaultCode"] == anomaly_type).astype(int).to_numpy()
-
-            threshold = 0.5
-            pred = (np.array(predictions_prelim) > threshold)
-
-            accuracy = accuracy_score(true, pred)
-            precision = precision_score(true, pred)
-            recall = recall_score(true, pred)
-            f1 = f1_score(true, pred)
-            z_metric = 0.4*accuracy + 0.2*precision + 0.2*recall + 0.2*f1
-            print(f"{anomaly_type} Test | Accuracy: {accuracy:.4} | Precision: {precision:.4} | Recall: {recall:.4} | F1: {f1:.4} | Z:{z_metric:.4}")
-            '''
-
-            # early stopping
-            #early_stopping(loss, val_loss)
-            #if early_stopping.early_stop:
-            #    print("Early stopping at epoch:", epoch)
-            #    break
-
             # save model
             if val_loss.item() <= best_val_loss:
                 torch.save(model.state_dict(), 'saved_models'+'/'+f'1dcnn_ae_model_{anomaly_type}.pth')
                 best_val_loss = val_loss.item()
 
-            # save model
-            #if z_metric >= best_test_z:
-            #    torch.save(model.state_dict(), 'saved_models'+'/'+f'1dcnn_ae_model_{anomaly_type}.pth')
-            #    print("Saving model...")
-            #    best_test_z = z_metric
         pd.DataFrame(history).to_csv(f"train_history/1dcnn_ae_{anomaly_type}.csv", index=False)
 
     # Evaluation
@@ -387,11 +373,6 @@ def evaluate_model(trainX, trainy, valX, valy):
     with torch.no_grad():
         outputs = model(valX)
 
-        #precision, recall, thresholds = precision_recall_curve(valy.cpu().numpy(), outputs.cpu().numpy())
-        # Choose a threshold where precision is maximized
-        #threshold = thresholds[np.argmax(precision)]
-        #print(threshold)
-        
         threshold = 0.5
         predicted = (outputs > threshold).float()
         correct = (predicted == valy).sum().item()

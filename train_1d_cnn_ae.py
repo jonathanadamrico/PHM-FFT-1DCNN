@@ -9,15 +9,17 @@ import pickle
 
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
 
 import torch
 torch.cuda.empty_cache()
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
+from torch.optim.lr_scheduler import ExponentialLR
 
-from utils.functions import get_features, scale_per_sensor
-from utils.classes import AutoencoderFC, CNNFeatureExtractor, Classifier
+from utils.functions import get_features, scale_per_sensor, scale_per_sample
+from utils.classes import AutoencoderFC_flatten, CNNFeatureExtractor, Classifier, ConvAutoencoder
 
 TRAIN_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Training data"
 TEST_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Test data"
@@ -36,6 +38,8 @@ fs = 64000
 anomaly_type = sys.argv[1] 
 print(anomaly_type)
 SEED = 163
+n_features = 21
+n_timesteps = 32000
 
 component_fault = {
 "motor": ["TYPE1","TYPE2","TYPE3","TYPE4"],
@@ -100,11 +104,11 @@ baselines_faults = {
     "RA0":["all"],
 }
 
-components = component_channels.keys()
+components = ("motor","gearbox","leftaxlebox","rightaxlebox")
 final_train_labels = [item for item in os.listdir(FINAL_TRAIN_DIR) if os.path.isdir(os.path.join(FINAL_TRAIN_DIR,item))]
 test_labels = pd.read_csv("Preliminary stage/Test_Labels_prelim.csv")
 
-
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #========================#
 #
@@ -113,11 +117,12 @@ test_labels = pd.read_csv("Preliminary stage/Test_Labels_prelim.csv")
 #========================#
 
 if quick_load:
-    normal_data = np.load(f"Quick imports/normal_data_ae_{anomaly_type}.npy")
-    normal_val_data = np.load(f"Quick imports/normal_val_data_ae_{anomaly_type}.npy")
-    val_data = np.load(f"Quick imports/val_data_ae_{anomaly_type}.npy")
-    print(normal_data.shape, val_data.shape)
 
+    X_train = np.load(f"Quick imports/X_train_ae_{anomaly_type}.npy")
+    y_train = np.load(f"Quick imports/y_train_ae_{anomaly_type}.npy")
+    X_val = np.load(f"Quick imports/X_val_ae_{anomaly_type}.npy")
+    y_val = np.load(f"Quick imports/y_val_ae_{anomaly_type}.npy")
+    print(X_train.shape, y_train.shape, X_val.shape, y_val.shape)
 else:
 
     # For normal types from prelim stage
@@ -129,7 +134,7 @@ else:
         
         for n_sample in range(1,4):
             sample_n = f"Sample{n_sample}"
-            normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, n_datapoints=fs)
+            normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs)
             if len(normal_temp) == 0:
                 continue
             if type(normal_arr) == type(None):
@@ -144,7 +149,7 @@ else:
             total_samples = len(os.listdir(os.path.join(FINAL_TRAIN_DIR,folder_name)))
             for n_sample in range(1,total_samples+1):
                 sample_n = f"Sample_{n_sample}"
-                normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, n_datapoints=fs, folder_name=folder_name)
+                normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs, folder_name=folder_name)
                 if len(normal_temp) == 0:
                         continue
                 if type(normal_arr) == type(None):
@@ -159,7 +164,7 @@ else:
         if anomaly_type == "TYPE17":
             break
         sample_n = f"Sample{n_sample}"
-        anomaly_temp = get_features(components, fault_type=anomaly_type, sample_n=sample_n, n_datapoints=fs)
+        anomaly_temp = get_features(components, fault_type=anomaly_type, sample_n=sample_n, fs=fs)
         if len(anomaly_temp) == 0:
                 continue
         if type(anomaly_arr) == type(None):
@@ -173,7 +178,7 @@ else:
             total_samples = len(os.listdir(os.path.join(FINAL_TRAIN_DIR,folder_name)))
             for n_sample in range(1,total_samples+1):
                 sample_n = f"Sample_{n_sample}"
-                anomaly_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, n_datapoints=fs, folder_name=folder_name)
+                anomaly_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs, folder_name=folder_name)
                 if len(anomaly_temp) == 0:
                         continue
                 if type(anomaly_arr) == type(None):
@@ -190,71 +195,104 @@ else:
     np.random.seed(SEED)
     np.random.shuffle(normal_arr)
 
-    normal_train_len = int(0.8 * len(normal_arr))
-    normal_data = normal_arr[:normal_train_len]
-    normal_val_data = normal_arr[normal_train_len:]
-    val_data = np.array(np.vstack([normal_val_data, anomaly_arr]))
+    # Build a X_train, y_train, X_val, y_val from normal_arr and anomaly_arr
+    # 80% train 20% validation
+    train_0_len = int(0.8 * len(normal_arr))
+    train_1_len = int(0.8 * len(anomaly_arr))
+    X_train = np.vstack([normal_arr[:train_0_len], anomaly_arr[:train_1_len]])
+    y_train = np.array(list([0]* train_0_len) +  list([1]* train_1_len))
+    X_val = np.vstack([normal_arr[train_0_len:], anomaly_arr[train_1_len:]])
+    y_val = np.array(list([0]* (len(normal_arr)-train_0_len)) +  list([1]* (len(anomaly_arr)-train_1_len)))
 
-    print(normal_data.shape, val_data.shape)
+    y_train = y_train.reshape(-1,1)
+    y_val = y_val.reshape(-1,1)
 
+    print(X_train.shape, y_train.shape, X_val.shape, y_val.shape)
+
+    normal_len = normal_arr.shape[0]
+    anomaly_len = anomaly_arr.shape[0]
     del normal_arr, anomaly_arr, normal_temp, anomaly_temp
     gc.collect()
 
-    np.save(f"Quick imports/normal_data_ae_{anomaly_type}.npy", normal_data)
-    np.save(f"Quick imports/normal_val_data_ae_{anomaly_type}.npy", normal_val_data)
-    np.save(f"Quick imports/val_data_ae_{anomaly_type}.npy", val_data)
+    np.save(f"Quick imports/X_train_ae_{anomaly_type}.npy", X_train)
+    np.save(f"Quick imports/y_train_ae_{anomaly_type}.npy", y_train)
+    np.save(f"Quick imports/X_val_ae_{anomaly_type}.npy", X_val)
+    np.save(f"Quick imports/y_val_ae_{anomaly_type}.npy", y_val)
 
+    
 
-print(f"Train-Val shape", normal_data.shape, val_data.shape)
+y_train = y_train.reshape(-1,1)
+y_val = y_val.reshape(-1,1)
 
-# Data scaling for each sensor
-# Idea: each tri-axial sensor should have the same scaling regardless of speed and lateral load.
-# This way, we don't need to store and retrieve scalers.
-# loop through each sample i and each tri-axial sensor j to j+3 [i,j:j+3,:]
-normal_data = scale_per_sensor(normal_data)
-normal_val_data = scale_per_sensor(normal_val_data)
-val_data = scale_per_sensor(val_data)
+# Generate a random permutation
+permutation_train = np.random.permutation(len(X_train))
+
+# Shuffle both arrays using the same permutation
+X_train = X_train[permutation_train]
+y_train = y_train[permutation_train]
+
+anomaly_len = sum(y_train)[0]
+normal_len = len(y_train) - anomaly_len
+print(anomaly_len, normal_len)
+
+# Data scaling
+scalers = []
+for n_scaler in range(X_train.shape[1]):
+    scaler = MinMaxScaler((0,1))
+    X_train[:,n_scaler,:] = scaler.fit_transform(X_train[:,n_scaler,:])
+    X_val[:,n_scaler,:] = scaler.transform(X_val[:,n_scaler,:])
+    scalers.append(scaler)
+
+normal_data = X_train[y_train.flatten() == 0]
+normal_val_data = X_val[y_val.flatten() == 0]
+print(f"Train-Val shape", normal_data.shape, normal_val_data.shape)
+
 
 # Convert to PyTorch tensors (add batch dimension)
 normal_data_tensor = torch.tensor(normal_data)
 normal_val_data_tensor = torch.tensor(normal_val_data)
-val_data_tensor = torch.tensor(val_data)
 
-# Create DataLoader for training
+# Create DataLoader for training autoencoder
 train_dataset = TensorDataset(normal_data_tensor)
 train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_dataset = TensorDataset(val_data_tensor)
+val_dataset = TensorDataset(normal_val_data_tensor)
 val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
+# Free some memory
+del normal_data, normal_val_data
+gc.collect()
+
 # fit and evaluate a model using pytorch
-def evaluate_model():
+def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(device, torch.cuda.get_device_name(0))
-    verbose, epochs = 1, 100
+    verbose, epochs = 1, 20
 
     # Instantiate the model
-    input_channels = 21  # Number of channels
-    input_length = 32000  # Length of each signal (time steps)
-    latent_dim = 128  # Size of the latent space
+    input_channels = n_features  # Number of channels
+    input_length = n_timesteps  # Length of each signal (time steps)
+    latent_dim = 32  # Size of the latent space
 
     # Define model
-    cnn_output_size = 32 * (input_length // 8)
-    autoencoder = AutoencoderFC(cnn_output_size, latent_dim=latent_dim).to(device)
+    cnn_output_size = 32 * (input_length // 1)
+    autoencoder = AutoencoderFC_flatten(cnn_output_size, latent_dim=latent_dim).to(device)
+    #autoencoder = ConvAutoencoder(input_channels=n_features, input_length=n_timesteps, latent_dim=latent_dim).to(device)
     cnn = CNNFeatureExtractor(input_channels, input_length).to(device)
     
     # Loss function and optimizer
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(autoencoder.parameters(), lr=0.001)
+    optimizer = optim.Adam(autoencoder.parameters(), lr=1e-3)
 
     if load_model:
-        autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_{anomaly_type}.pth', map_location=device))
+        autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_{anomaly_type}.pth', weights_only=False, map_location=device))
     else:
         # Training loop
         history = {f"train":[], f"val":[]} 
         best_val_loss = 999
         for epoch in range(epochs):
+            cnn.train()
             autoencoder.train()
-
+            train_loss = 0
             # Iterate over batches
             for batch in train_loader:
                 x = batch[0].to(device)
@@ -274,6 +312,7 @@ def evaluate_model():
                 # Compute the loss
                 loss = criterion(outputs, inputs)  # Reconstruction error
                 loss.backward()
+                train_loss += loss
                 
                 # Update the weights
                 optimizer.step()
@@ -285,13 +324,13 @@ def evaluate_model():
                 val_loss = 0
                 for val_batch in val_loader:
                     val_inputs = val_batch[0].to(device) 
-                    cnn_features = cnn(val_inputs)  # Output shape will be (batch_size, 32, 4000)
-                    cnn_features_flat = cnn_features.view(cnn_features.size(0), -1)  # Flatten to (batch_size, 32 * 4000)
+                    cnn_features = cnn(val_inputs)  
+                    cnn_features_flat = cnn_features.view(cnn_features.size(0), -1) 
                     val_outputs, _ = autoencoder(cnn_features_flat)
                     val_loss += criterion(val_outputs, cnn_features_flat)
 
-            print((f"\n Epoch {epoch}/{epochs} | train loss: {loss.item():.4f} | validation loss: {val_loss.item():.4f}"))
-            history[f"train"].append(loss.item())
+            print((f"\n Epoch {epoch}/{epochs} | train loss: {train_loss.item():.4f} | validation loss: {val_loss.item():.4f}"))
+            history[f"train"].append(train_loss.item())
             history[f"val"].append(val_loss.item())
 
             # save model
@@ -303,59 +342,123 @@ def evaluate_model():
 
 
     # Get latent features from the autoencoder for normal and anomalous data
+    autoencoder = AutoencoderFC_flatten(cnn_output_size, latent_dim=latent_dim).to(device)
+    autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_{anomaly_type}.pth', weights_only=False, map_location=device))
+    cnn.eval()
     autoencoder.eval()  # Set to evaluation mode
-    with torch.no_grad():
-        cnn_features = cnn(val_data_tensor.to(device))
-        cnn_features_flat = cnn_features.view(cnn_features.size(0), -1)
-        _, X_latent = autoencoder(cnn_features_flat)  # Latent features for validation data
 
-        y_latent = torch.cat((torch.zeros(len(normal_val_data)), torch.ones(len(val_data)-len(normal_val_data))), dim=0)
+    X_train = torch.tensor(X_train, dtype=torch.float32).to(device)
+    y_train = torch.tensor(y_train, dtype=torch.float32).to(device)
+    X_val = torch.tensor(X_val, dtype=torch.float32).to(device)
+    y_val = torch.tensor(y_val, dtype=torch.float32).to(device)
 
-        X_train_latent, X_val_latent, y_train, y_val = train_test_split(X_latent, y_latent, test_size=0.2, random_state=42)
+    # class weights for imbalanced data
+    weight_for_0 = torch.tensor(1.0 / normal_len, dtype=torch.float32).to(device)
+    weight_for_1 = torch.tensor(1.0 / anomaly_len, dtype=torch.float32).to(device)
+    class_weights = torch.tensor([weight_for_0, weight_for_1]).to(device)
 
     # Initialize Classifier model
     classifier = Classifier(latent_dim=latent_dim).to(device)
 
     # Loss and optimizer for the classifier
-    classifier_optimizer = optim.Adam(classifier.parameters(), lr=0.001)
-    classifier_criterion = nn.BCELoss()  # Binary Cross-Entropy loss
+    pos_weight = class_weights[1] / class_weights[0]  # Calculate the positive weight
+    classifier_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    lr_decay_rate = 0.1
+    lr_decay_steps = 10000
+    classifier_optimizer = optim.SGD(classifier.parameters(), lr=1e-4, momentum=0.9, nesterov=True)
+    scheduler = ExponentialLR(classifier_optimizer, lr_decay_rate**(1.0 / lr_decay_steps))
+
+    batch_size, epochs = 32, 100
 
     # Train the classifier
-    for epoch in range(50):
+    history = {f"train":[], f"val":[]} 
+    best_val_loss = 999
+    for epoch in range(epochs):
         classifier.train()
         classifier_optimizer.zero_grad()
-        
-        # Forward pass
-        outputs = classifier(X_train_latent)
-        
-        # Compute loss
-        loss = classifier_criterion(outputs.squeeze(), y_train.to(device))
-        
-        # Backpropagation
-        loss.backward()
-        classifier_optimizer.step()
-        
-        if epoch % 10 == 0:
-            print(f'Epoch {epoch}/{50}, Loss: {loss.item()}')
 
+        train_loss = 0
+        # Iterate over batches
+        for i in range(0, len(X_train), batch_size):
+            batch_X = X_train[i:i+batch_size]
+            batch_y = y_train[i:i+batch_size]
+        
+            cnn_features = cnn(batch_X)
+            inputs = cnn_features.view(cnn_features.size(0), -1) 
+            _, latent = autoencoder(inputs)
+            
+            classifier_optimizer.zero_grad()
+
+            # Forward pass
+            outputs = classifier(latent)
+
+            # Compute loss
+            loss = classifier_criterion(outputs, batch_y)
+
+            # Backpropagation
+            loss.backward()
+            classifier_optimizer.step()
+            train_loss += loss
+            scheduler.step()
+
+        # Validation loss
+        classifier.eval()
+        with torch.no_grad():
+            val_loss = 0
+            # Iterate over batches
+            for i in range(0, len(X_val), batch_size):
+                batch_X = X_val[i:i+batch_size]
+                batch_y = y_val[i:i+batch_size]
+
+                cnn_features = cnn(batch_X)
+                inputs = cnn_features.view(cnn_features.size(0), -1) 
+                _, latent = autoencoder(inputs)
+                y_pred = classifier(latent)
+                loss = classifier_criterion(y_pred, batch_y)
+                val_loss += loss
+
+        if epoch % 10 == 0:
+            print(f'epoch {epoch}/{epochs} | train loss: {train_loss.item():.4f} | val loss: {val_loss.item():.4f}')
+        history[f"train"].append(train_loss.item())
+        history[f"val"].append(val_loss.item())
+
+        # save model
+        if val_loss.item() <= best_val_loss:
+            torch.save(classifier.state_dict(), 'saved_models'+'/'+f'classifier_{anomaly_type}.pth')
+            best_val_loss = val_loss.item()
+
+    pd.DataFrame(history).to_csv(f"train_history/classifier_{anomaly_type}.csv", index=False)
 
     # Evaluate the classifier on validation data
+    classifier = Classifier(latent_dim=latent_dim).to(device)
+    classifier.load_state_dict(torch.load('saved_models'+'/'+f'classifier_{anomaly_type}.pth', weights_only=False, map_location=device))
     classifier.eval()
     with torch.no_grad():
-        y_pred = classifier(X_val_latent).squeeze()
-        y_pred = (y_pred > 0.5).float().cpu().numpy()  # Apply threshold at 0.5 for binary classification
-        
+        y_preds = []
+        # Iterate over batches
+        for i in range(0, len(X_val), batch_size):
+            batch_X = X_val[i:i+batch_size]
+            batch_y = y_val[i:i+batch_size]
+
+            cnn_features = cnn(batch_X)
+            inputs = cnn_features.view(cnn_features.size(0), -1) 
+            _, latent = autoencoder(inputs)
+            y_pred = classifier(latent).squeeze()
+            y_pred = (y_pred > 0.5).float().cpu().numpy()  # Apply threshold at 0.5 for binary classification
+            if inputs.cpu().numpy().shape[0] < 2:
+                break
+            y_preds.extend(y_pred)
+
+        y_val = y_val.cpu().numpy()[:len(y_preds)]
+
         # Compute metrics
-        accuracy = accuracy_score(y_val, y_pred)
-        precision = precision_score(y_val, y_pred)
-        recall = recall_score(y_val, y_pred)
-        f1 = f1_score(y_val, y_pred)
-        
-        print(f"Accuracy: {accuracy:.4f}")
-        print(f"Precision: {precision:.4f}")
-        print(f"Recall: {recall:.4f}")
-        print(f"F1 Score: {f1:.4f}")
+        accuracy = accuracy_score(y_val, y_preds)
+        precision = precision_score(y_val, y_preds)
+        recall = recall_score(y_val, y_preds)
+        f1 = f1_score(y_val, y_preds)
+        z_metric = 0.4*accuracy + 0.2*precision + 0.2*recall + 0.2*f1
+        print(f"Accuracy: {accuracy:.4f} | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f} | Z: {z_metric:.4f}")
 
 
-evaluate_model()
+train_autoencoder_classifier(X_train, y_train, X_val, y_val)
 

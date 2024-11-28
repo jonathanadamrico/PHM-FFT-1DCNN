@@ -2,6 +2,7 @@
 import pandas as pd
 import numpy as np
 from tqdm.auto import tqdm
+import matplotlib.pyplot as plt
 import os
 import sys
 import pickle
@@ -12,8 +13,8 @@ import torch.nn as nn
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-from utils.functions import get_test_features, scale_per_sensor
-from utils.classes import ConvNet
+from utils.functions import get_test_features, scale_per_sensor, scale_per_sample, get_fundamental_frequency, round_to_nearest, scale_per_sensor_2d
+from utils.classes import ConvNet, ConvAutoencoder
 
 TRAIN_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Training data"
 TEST_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Test data"
@@ -23,6 +24,7 @@ FINAL_TEST_DIR = "Data_Final_Stage/Data_Final_Stage/Test_Final_round8/Test"
 anomaly_type = sys.argv[1] 
 print(anomaly_type)
 fs = 64000
+quick_load_holdout = True
 quick_load_infer = True
 n_features = 21
 #if anomaly_type == "TYPE1":
@@ -92,16 +94,15 @@ baselines_faults = {
     "RA0":["all"],
 }
 
-components = component_channels.keys()
+components = ("motor","gearbox","leftaxlebox","rightaxlebox")
 final_train_labels = [item for item in os.listdir(FINAL_TRAIN_DIR) if os.path.isdir(os.path.join(FINAL_TRAIN_DIR,item))]
 test_labels = pd.read_csv("Preliminary stage/Test_Labels_prelim.csv")
 
-
 # Data scaling
-'''scalers = []
+scalers = []
 for n_scaler in range(n_features):
     scaler = pickle.load(open(f'saved_scalers/scaler_ae_{anomaly_type}_{n_scaler}', 'rb'))
-    scalers.append(scaler)'''
+    scalers.append(scaler)
 
 #======================#
 #
@@ -110,13 +111,36 @@ for n_scaler in range(n_features):
 #======================#
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-quick_load_holdout = True
 
 # comment out loading the model just to speed things up 
 n_timesteps = n_datapoints // 2
 model = ConvNet(n_timesteps, n_features).to(device)
-model.load_state_dict(torch.load('saved_models'+'/'+f'1dcnn_ae_model_{anomaly_type}.pth', map_location=device))
+model.load_state_dict(torch.load('saved_models'+'/'+f'1dcnn_ae_model_{anomaly_type}.pth', map_location=device, weights_only=False))
 
+# Remove different speed effects using autoencoder
+def remove_speedfx(data_):
+    data = data_.copy()
+    for i in range(len(data)):
+        positive_magnitude = data[i,7,:] # CH8
+        fundamental_frequency = get_fundamental_frequency(positive_magnitude, fs)
+        fundamental_frequency = round_to_nearest(fundamental_frequency, [20,40,60])
+        data[i,:,:] = scale_per_sample(data[i,:,:])
+        if fundamental_frequency == 20:
+            continue
+        
+        # instantiate autoencoders 
+        autoencoder_40Hz = ConvAutoencoder(input_channels=n_features, input_length=n_timesteps, latent_dim=256).to(device)
+        autoencoder_60Hz = ConvAutoencoder(input_channels=n_features, input_length=n_timesteps, latent_dim=256).to(device)
+
+        # load pretrained weights of the autoencoder models
+        autoencoder_40Hz.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_40Hz.pth', map_location=device, weights_only=False))
+        autoencoder_60Hz.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_60Hz.pth', map_location=device, weights_only=False))
+
+        if fundamental_frequency == 40:
+            data[i,:,:] = autoencoder_40Hz(torch.tensor(data[i,:,:], dtype=torch.float32).to(device)).detach().cpu().numpy()
+        if fundamental_frequency == 60:
+            data[i,:,:] = autoencoder_60Hz(torch.tensor(data[i,:,:], dtype=torch.float32).to(device)).detach().cpu().numpy()
+    return data
 
 predictions_prelim = []
 for n_sample in range(1,103):
@@ -125,17 +149,25 @@ for n_sample in range(1,103):
     if quick_load_holdout:
         X_test = np.load(f"Quick imports/X_holdout_ae_{sample_n}.npy")
         #if anomaly_type == "TYPE1":
-        #    X_test = get_test_features(components, sample_n=sample_n, n_datapoints=fs, anomaly_type=anomaly_type)
+        #    X_test = get_test_features(components, sample_n=sample_n, fs=fs, anomaly_type=anomaly_type)
     else:
-        X_test = get_test_features(components, sample_n=sample_n, n_datapoints=fs, anomaly_type=anomaly_type)
+        X_test = get_test_features(components, sample_n=sample_n, fs=fs, anomaly_type=anomaly_type)
         #if anomaly_type != "TYPE1":
         #    np.save(f"Quick imports/X_holdout_ae_{sample_n}.npy", X_test)
 
     if len(X_test) == 0:
         continue
-    '''for n_scaler in range(X_test.shape[1]):
-        X_test[:,n_scaler,:] = scalers[n_scaler].transform(X_test[:,n_scaler,:])'''
-    X_test = scale_per_sensor(X_test)
+    plt.plot(X_test[0,1,:])
+    plt.savefig('X_test.png')
+    plt.clf()
+    for n_scaler in range(X_test.shape[1]):
+        X_test[:,n_scaler,:] = scalers[n_scaler].transform(X_test[:,n_scaler,:])
+    
+    #X_test = remove_speedfx(X_test)
+    #X_test = scale_per_sample(X_test)
+    plt.plot(X_test[0,1,:])
+    plt.savefig('X_test_scaled.png')
+    plt.clf()
     X_test = torch.tensor(X_test, dtype=torch.float32).to(device)
 
     # Evaluation
@@ -186,27 +218,38 @@ predictions_final = []
 for n_sample in tqdm(range(1,len(os.listdir(FINAL_TEST_DIR))+1)):
     sample_n = f"Sample{n_sample}"
 
-    try:
+    if quick_load_infer:
         X_test1 = np.load(f"Quick imports/X_test1_ae_{sample_n}.npy")
         X_test2 = np.load(f"Quick imports/X_test2_ae_{sample_n}.npy")
         X_test3 = np.load(f"Quick imports/X_test3_ae_{sample_n}.npy")
-    except:
-        X_test1 = get_test_features(components, sample_n=sample_n, n_datapoints=fs, anomaly_type=anomaly_type, final_stage=True, window=1)
-        X_test2 = get_test_features(components, sample_n=sample_n, n_datapoints=fs, anomaly_type=anomaly_type, final_stage=True, window=2)
-        X_test3 = get_test_features(components, sample_n=sample_n, n_datapoints=fs, anomaly_type=anomaly_type, final_stage=True, window=3)
+    else:
+        X_test1 = get_test_features(components, sample_n=sample_n, fs=fs, anomaly_type=anomaly_type, final_stage=True, window=1)
+        X_test2 = get_test_features(components, sample_n=sample_n, fs=fs, anomaly_type=anomaly_type, final_stage=True, window=2)
+        X_test3 = get_test_features(components, sample_n=sample_n, fs=fs, anomaly_type=anomaly_type, final_stage=True, window=3)
 
         #if anomaly_type != "TYPE1":
         #    np.save(f"Quick imports/X_test1_ae_{sample_n}.npy", X_test1)
         #    np.save(f"Quick imports/X_test2_ae_{sample_n}.npy", X_test2)
         #    np.save(f"Quick imports/X_test3_ae_{sample_n}.npy", X_test3)
 
-    '''for n_scaler in range(X_test1.shape[1]):
+    plt.plot(X_test1[0,1,:])
+    plt.savefig('X_test1.png')
+    plt.clf()
+
+    for n_scaler in range(X_test1.shape[1]):
         X_test1[:,n_scaler,:] = scalers[n_scaler].transform(X_test1[:,n_scaler,:])
         X_test2[:,n_scaler,:] = scalers[n_scaler].transform(X_test2[:,n_scaler,:])
-        X_test3[:,n_scaler,:] = scalers[n_scaler].transform(X_test3[:,n_scaler,:])'''
-    X_test1 = scale_per_sensor(X_test1)
-    X_test2 = scale_per_sensor(X_test2)
-    X_test3 = scale_per_sensor(X_test3)
+        X_test3[:,n_scaler,:] = scalers[n_scaler].transform(X_test3[:,n_scaler,:])
+    
+    #X_test1 = remove_speedfx(X_test1)
+    #X_test2 = remove_speedfx(X_test2)
+    #X_test3 = remove_speedfx(X_test3)
+    #X_test1 = scale_per_sample(X_test1)
+    #X_test2 = scale_per_sample(X_test2)
+    #X_test3 = scale_per_sample(X_test3)
+    plt.plot(X_test1[0,1,:])
+    plt.savefig('X_test1_scaled.png')
+    plt.clf()
     X_test1 = torch.tensor(X_test1, dtype=torch.float32).to(device)
     X_test2 = torch.tensor(X_test2, dtype=torch.float32).to(device)
     X_test3 = torch.tensor(X_test3, dtype=torch.float32).to(device)
