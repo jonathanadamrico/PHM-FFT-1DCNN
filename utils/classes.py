@@ -312,3 +312,46 @@ class ConvAutoencoder(nn.Module):
         latent = self.encoder(x)
         x = self.decoder(latent)
         return x, latent
+
+
+
+
+# Define the Encoder and Decoder for the VAE
+class VAE(nn.Module):
+    def __init__(self, input_dim, latent_dim):
+        super(VAE, self).__init__()
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+        
+        # Encoder
+        self.encoder_fc1 = nn.Linear(input_dim, 64)
+        self.encoder_fc2 = nn.Linear(64, latent_dim)
+
+        self.encoder_fc3 = nn.Linear(64, latent_dim)  # For the log-variance
+        
+        # Decoder
+        self.decoder_fc1 = nn.Linear(latent_dim, 64)
+        self.decoder_fc2 = nn.Linear(64, input_dim)
+        
+    def encode(self, x):
+        h1 = torch.relu(self.encoder_fc1(x))
+        mu = self.encoder_fc2(h1)
+        log_var = self.encoder_fc3(h1)
+        return mu, log_var
+    
+    def reparameterize(self, mu, log_var):
+        std = torch.exp(0.5*log_var)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+    
+    def decode(self, z):
+        h3 = torch.relu(self.decoder_fc1(z))
+        return torch.sigmoid(self.decoder_fc2(h3))  # Sigmoid for binary data
+
+    def forward(self, x):
+        mu, log_var = self.encode(x)
+        z = self.reparameterize(mu, log_var)
+        reconstructed = self.decode(z)
+        return reconstructed, mu, log_var
+
+
