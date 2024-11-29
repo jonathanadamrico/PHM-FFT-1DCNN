@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from torch.optim.lr_scheduler import ExponentialLR
 
 from utils.functions import get_features, scale_per_sensor, scale_per_sample
-from utils.classes import AutoencoderFC_flatten, CNNFeatureExtractor, Classifier, ConvAutoencoder
+from utils.classes import AutoencoderFC_flatten, CNNFeatureExtractor, Classifier, ConvAutoencoder, VAE
 
 TRAIN_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Training data"
 TEST_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Test data"
@@ -281,7 +281,8 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
 
     # Define model
     cnn_output_size = 32 * (input_length // 1)
-    autoencoder = AutoencoderFC_flatten(cnn_output_size, latent_dim=latent_dim).to(device)
+    autoencoder = VAE(input_dim=cnn_output_size, latent_dim=latent_dim).to(device)
+    #autoencoder = AutoencoderFC_flatten(cnn_output_size, latent_dim=latent_dim).to(device)
     #autoencoder = ConvAutoencoder(input_channels=n_features, input_length=n_timesteps, latent_dim=latent_dim).to(device)
     cnn = CNNFeatureExtractor(input_channels, input_length).to(device)
     
@@ -301,7 +302,7 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     lr_decay_steps = 10000
     optimizer = optim.SGD(list(autoencoder.parameters())+list(classifier.parameters()), lr=1e-4, momentum=0.9, nesterov=True)
     scheduler = ExponentialLR(optimizer, lr_decay_rate**(1.0 / lr_decay_steps))
-    lambda_reconstruction = 0.01
+    lambda_reconstruction = 1.0
 
     if load_model:
         autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_{anomaly_type}.pth', weights_only=False, map_location=device))
@@ -335,11 +336,14 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
                 optimizer.zero_grad()
                 
                 # Forward pass
-                outputs, latent = autoencoder(inputs)
-                logits = classifier(latent)
+                outputs, mu, log_var = autoencoder(inputs)
+                z = autoencoder.reparameterize(mu, log_var)
+                
+                logits = classifier(z)
 
                 # Compute the loss = reconstruction loss + classification loss
-                loss = criterion(outputs, inputs)  + lambda_reconstruction * classifier_criterion(logits, batch_y)
+                kl_divergence = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
+                loss = criterion(outputs, inputs) + kl_divergence  + lambda_reconstruction * classifier_criterion(logits, batch_y) 
                 loss.backward()
                 train_loss += loss
                 
@@ -349,15 +353,20 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
 
             cnn.eval()
             autoencoder.eval()
+            classifier.eval()
 
             with torch.no_grad():  # No need to track gradients during evaluation
                 val_loss = 0 
                 for i in range(0, len(X_val), batch_size):
                     batch_X = X_val[i:i+batch_size]
+                    batch_y = y_val[i:i+batch_size]
                     cnn_features = cnn(batch_X)  
                     cnn_features_flat = cnn_features.view(cnn_features.size(0), -1) 
-                    val_outputs, _ = autoencoder(cnn_features_flat)
-                    val_loss += criterion(val_outputs, cnn_features_flat)
+                    val_outputs, mu, log_var = autoencoder(cnn_features_flat)
+                    z = autoencoder.reparameterize(mu, log_var)
+                    logits = classifier(z)
+                    kl_divergence = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
+                    val_loss += criterion(val_outputs, cnn_features_flat) + kl_divergence + lambda_reconstruction * classifier_criterion(logits, batch_y) 
 
             print((f"\n Epoch {epoch}/{epochs} | train loss: {train_loss.item():.4f} | validation loss: {val_loss.item():.4f}"))
             history[f"train"].append(train_loss.item())
@@ -372,7 +381,8 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
 
 
     # Get latent features from the autoencoder for normal and anomalous data
-    autoencoder = AutoencoderFC_flatten(cnn_output_size, latent_dim=latent_dim).to(device)
+    #autoencoder = AutoencoderFC_flatten(cnn_output_size, latent_dim=latent_dim).to(device)
+    autoencoder = VAE(cnn_output_size, latent_dim).to(device)
     autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_{anomaly_type}.pth', weights_only=False, map_location=device))
     cnn.eval()
     autoencoder.eval()  # Set to evaluation mode
@@ -393,7 +403,7 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     classifier_optimizer = optim.SGD(classifier.parameters(), lr=1e-4, momentum=0.9, nesterov=True)
     scheduler = ExponentialLR(classifier_optimizer, lr_decay_rate**(1.0 / lr_decay_steps))
 
-    batch_size, epochs = 32, 100
+    batch_size, epochs = 32, 200
 
     # Train the classifier
     history = {f"train":[], f"val":[]} 
@@ -414,12 +424,13 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
         
             cnn_features = cnn(batch_X)
             inputs = cnn_features.view(cnn_features.size(0), -1) 
-            _, latent = autoencoder(inputs)
+            _, mu, log_var = autoencoder(inputs)
+            z = autoencoder.reparameterize(mu, log_var)
             
             classifier_optimizer.zero_grad()
 
             # Forward pass
-            outputs = classifier(latent)
+            outputs = classifier(z)
 
             # Compute loss
             loss = classifier_criterion(outputs, batch_y)
@@ -441,8 +452,9 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
 
                 cnn_features = cnn(batch_X)
                 inputs = cnn_features.view(cnn_features.size(0), -1) 
-                _, latent = autoencoder(inputs)
-                y_pred = classifier(latent)
+                _, mu, log_var = autoencoder(inputs)
+                z = autoencoder.reparameterize(mu, log_var)
+                y_pred = classifier(z)
                 loss = classifier_criterion(y_pred, batch_y)
                 val_loss += loss
 
@@ -471,14 +483,19 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
 
             cnn_features = cnn(batch_X)
             inputs = cnn_features.view(cnn_features.size(0), -1) 
-            _, latent = autoencoder(inputs)
-            y_pred = classifier(latent).squeeze()
+            _, mu, log_var = autoencoder(inputs)
+            z = autoencoder.reparameterize(mu, log_var)
+            y_pred = classifier(z).squeeze()
+            print(y_pred)
             y_pred = (y_pred > 0.5).float().cpu().numpy()  # Apply threshold at 0.5 for binary classification
             if inputs.cpu().numpy().shape[0] < 2:
                 break
             y_preds.extend(y_pred)
 
-        y_val = y_val.cpu().numpy()[:len(y_preds)]
+        y_val = y_val.squeeze().cpu().numpy()[:len(y_preds)]
+
+        print(y_val)
+        
 
         # Compute metrics
         accuracy = accuracy_score(y_val, y_preds)
