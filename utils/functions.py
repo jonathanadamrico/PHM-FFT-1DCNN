@@ -11,6 +11,8 @@ import seaborn as sns
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import confusion_matrix, multilabel_confusion_matrix
 from sklearn.preprocessing import LabelEncoder
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 from scipy.fft import fft, fftfreq
 
@@ -422,3 +424,22 @@ def remove_speedfx(data_, n_features, n_timesteps, fs):
         if fundamental_frequency == 60:
             data[i,:,:] = autoencoder_60Hz(data[i,:,:])
         return data
+    
+
+
+# Visualize the latent space
+def plot_latent_space(latent_2d, labels, filename='latent_space.pdf', title="Latent Space Visualization"):
+    plt.figure(figsize=(8, 6))
+    
+    # Assuming labels are binary (0 for normal, 1 for anomaly)
+    plt.scatter(latent_2d[labels == 0, 0], latent_2d[labels == 0, 1], color='blue', label='Normal', alpha=0.5)
+    plt.scatter(latent_2d[labels == 1, 0], latent_2d[labels == 1, 1], color='red', label='Anomaly', alpha=0.5)
+    
+    plt.title(title)
+    plt.xlabel("Latent Dimension 1")
+    plt.ylabel("Latent Dimension 2")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
+    plt.clf()
+
