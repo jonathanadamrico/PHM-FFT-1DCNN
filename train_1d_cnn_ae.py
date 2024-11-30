@@ -10,6 +10,8 @@ import pickle
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 import torch
 torch.cuda.empty_cache()
@@ -18,7 +20,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from torch.optim.lr_scheduler import ExponentialLR
 
-from utils.functions import get_features, scale_per_sensor, scale_per_sample
+from utils.functions import get_features, scale_per_sensor, scale_per_sample, plot_latent_space
 from utils.classes import AutoencoderFC_flatten, CNNFeatureExtractor, Classifier, ConvAutoencoder, VAE
 
 TRAIN_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Training data"
@@ -247,20 +249,9 @@ normal_data = X_train[y_train.flatten() == 0]
 normal_val_data = X_val[y_val.flatten() == 0]
 print(f"Train-Val shape", normal_data.shape, normal_val_data.shape)
 
+normal_data = torch.tensor(normal_data, dtype=torch.float32).to(device)
+normal_val_data = torch.tensor(normal_val_data, dtype=torch.float32).to(device)
 
-'''# Convert to PyTorch tensors (add batch dimension)
-normal_data_tensor = torch.tensor(normal_data)
-normal_val_data_tensor = torch.tensor(normal_val_data)
-
-# Create DataLoader for training autoencoder
-train_dataset = TensorDataset(normal_data_tensor)
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_dataset = TensorDataset(normal_val_data_tensor)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-
-# Free some memory
-del normal_data, normal_val_data
-gc.collect()'''
 
 # fit and evaluate a model using pytorch
 def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
@@ -318,13 +309,18 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
             train_loss = 0
 
             # Shuffle both arrays using the same permutation
-            permutation_train = np.random.permutation(len(X_train))
+            '''permutation_train = np.random.permutation(len(X_train))
             X_train = X_train[permutation_train]
-            y_train = y_train[permutation_train]
+            y_train = y_train[permutation_train]'''
+
+            permutation_train = np.random.permutation(len(normal_data))
+            X_train_normal = normal_data[permutation_train]
             # Iterate over batches
             for i in range(0, len(X_train), batch_size):
                 batch_X = X_train[i:i+batch_size]
                 batch_y = y_train[i:i+batch_size]
+
+                #batch_X = X_train_normal[i:i+batch_size]
 
                 # Pass through CNN feature extractor
                 cnn_features = cnn(batch_X)
@@ -360,6 +356,7 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
                 for i in range(0, len(X_val), batch_size):
                     batch_X = X_val[i:i+batch_size]
                     batch_y = y_val[i:i+batch_size]
+                    #batch_X = normal_val_data[i:i+batch_size]
                     cnn_features = cnn(batch_X)  
                     cnn_features_flat = cnn_features.view(cnn_features.size(0), -1) 
                     val_outputs, mu, log_var = autoencoder(cnn_features_flat)
@@ -387,6 +384,50 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     cnn.eval()
     autoencoder.eval()  # Set to evaluation mode
 
+
+    # Visualize 1DCNN feature space
+    latent_2d_tsne_all = []
+    for i in range(0, len(X_val), batch_size):
+        batch_X = X_val[i:i+batch_size]
+        batch_y = y_val[i:i+batch_size]
+        if len(batch_X) < batch_size:
+            break
+        cnn_features = cnn(batch_X)
+        features = cnn_features.view(cnn_features.size(0), -1).detach().cpu().numpy() 
+        pca = PCA(n_components=batch_size)  # Reduce to smaller dimensions
+        features_reduced = pca.fit_transform(features)  
+        tsne = TSNE(n_components=2, perplexity=5)
+        latent_2d_tsne = tsne.fit_transform(features_reduced)
+        latent_2d_tsne_all.append(latent_2d_tsne)
+    latent_2d_tsne_all = np.concatenate(latent_2d_tsne_all, axis=0)
+    plot_latent_space(latent_2d_tsne_all, y_val[:len(latent_2d_tsne_all)].squeeze().cpu().numpy(), f'latent_space_figs/1dcnn_output_{anomaly_type}.png', '1DCNN Feature Representation') 
+
+    del latent_2d_tsne, latent_2d_tsne_all
+    gc.collect()
+
+    # Visualize VAE latent space
+    latent_2d_tsne_all = []
+    for i in range(0, len(X_val), batch_size):
+        batch_X = X_val[i:i+batch_size]
+        batch_y = y_val[i:i+batch_size]
+        if len(batch_X) < batch_size:
+            break
+        cnn_features = cnn(batch_X)
+        cnn_features_flat = cnn_features.view(cnn_features.size(0), -1).detach()
+        val_outputs, mu, log_var = autoencoder(cnn_features_flat)
+        pca = PCA(n_components=batch_size)  # Reduce to smaller dimensions
+        features_reduced = pca.fit_transform(mu.detach().cpu().numpy())  
+        tsne = TSNE(n_components=2, perplexity=5)
+        latent_2d_tsne = tsne.fit_transform(features_reduced)
+        latent_2d_tsne_all.append(latent_2d_tsne)
+    latent_2d_tsne_all = np.concatenate(latent_2d_tsne_all, axis=0)
+    plot_latent_space(latent_2d_tsne_all, y_val[:len(latent_2d_tsne_all)].squeeze().cpu().numpy(), f'latent_space_figs/hybridloss_vae_latent_{anomaly_type}.png', 'VAE Latent Space Visualization')
+
+    del latent_2d_tsne_all, latent_2d_tsne, cnn_features_flat
+    gc.collect()
+
+    exit()
+
     # class weights for imbalanced data
     weight_for_0 = torch.tensor(1.0 / normal_len, dtype=torch.float32).to(device)
     weight_for_1 = torch.tensor(1.0 / anomaly_len, dtype=torch.float32).to(device)
@@ -403,7 +444,7 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     classifier_optimizer = optim.SGD(classifier.parameters(), lr=1e-4, momentum=0.9, nesterov=True)
     scheduler = ExponentialLR(classifier_optimizer, lr_decay_rate**(1.0 / lr_decay_steps))
 
-    batch_size, epochs = 32, 200
+    batch_size, epochs = 32, 100
 
     # Train the classifier
     history = {f"train":[], f"val":[]} 
