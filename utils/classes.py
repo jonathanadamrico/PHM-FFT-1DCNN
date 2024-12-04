@@ -180,17 +180,21 @@ class CNNFeatureExtractor(nn.Module):
     def __init__(self, input_channels, input_length):
         super(CNNFeatureExtractor, self).__init__()
         self.conv1 = nn.Conv1d(input_channels, 128, kernel_size=3, stride=1, padding=1)
-        self.tanh1 = nn.Tanh()
+        self.bnorm1 = nn.BatchNorm1d(128)
+        #self.tanh1 = nn.Tanh()
+        self.relu1 = nn.ReLU()
         
         self.conv2 = nn.Conv1d(128, 64, kernel_size=3, stride=1, padding=1)
-        self.tanh2 = nn.Tanh()
+        self.bnorm2 = nn.BatchNorm1d(64)
+        #self.tanh2 = nn.Tanh()
+        self.relu2 = nn.ReLU()
         self.dropout = nn.Dropout(p=0.55)
         self.pool1 = nn.MaxPool1d(kernel_size=2, stride=2) 
         
     def forward(self, x):
-        x = self.tanh1(self.conv1(x))
+        x = self.relu1(self.conv1(x))
         
-        x = self.tanh2(self.conv2(x))
+        x = self.relu2(self.conv2(x))
         x = self.dropout(x)
         x = self.pool1(x)
         
@@ -269,11 +273,15 @@ class Classifier(nn.Module):
         super(Classifier, self).__init__()
         self.fc = nn.Sequential(
             nn.Linear(latent_dim, 32),
+            #nn.BatchNorm1d(32),
             nn.ReLU(True),
             nn.Linear(32, 16),
+            #nn.BatchNorm1d(16),
             nn.ReLU(True),
             nn.Linear(16, 16),
-            nn.Tanh(),
+            #nn.BatchNorm1d(16),
+            nn.ReLU(True),
+            #nn.Tanh(),
             nn.Dropout(p=0.6),
             nn.Linear(16, 1),
             nn.Sigmoid()  # Sigmoid for binary classification
@@ -346,7 +354,7 @@ class VAE(nn.Module):
     
     def decode(self, z):
         h3 = torch.relu(self.decoder_fc1(z))
-        return torch.sigmoid(self.decoder_fc2(h3))  # Sigmoid for binary data
+        return self.decoder_fc2(h3)
 
     def forward(self, x):
         mu, log_var = self.encode(x)

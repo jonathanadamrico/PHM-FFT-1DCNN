@@ -7,6 +7,7 @@ import os
 import sys
 import math
 import seaborn as sns
+import psutil
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import confusion_matrix, multilabel_confusion_matrix
@@ -64,6 +65,57 @@ def reduce_mem_usage(df, verbose=True):
     end_mem = df.memory_usage().sum() / 1024**2
     if verbose: print('Mem. usage decreased to {:5.2f} Mb ({:.1f}% reduction)'.format(end_mem, 100 * (start_mem - end_mem) / start_mem))
     return df
+
+
+def reduce_mem_usage_array(arr, verbose=True):
+    """
+    Reduce memory usage of a NumPy array by converting its data type to the smallest possible type.
+    
+    arr: NumPy array with shape (n_samples, n_features, n_datapoints)
+    verbose: If True, print memory usage reduction details.
+    
+    Returns: The input array with reduced memory usage.
+    """
+    # Calculate initial memory usage
+    start_mem = arr.nbytes / 1024**2  # in MB
+    
+    # Loop through the features and datapoints to downcast the array
+    n_samples, n_features, n_datapoints = arr.shape
+    for feature in range(n_features):
+        for sample in range(n_samples):
+            # Get the column (signal)
+            signal = arr[sample, feature, :]
+            
+            # Check min and max of the signal to decide type
+            c_min = signal.min()
+            c_max = signal.max()
+
+            # Convert to the appropriate type based on min/max
+            if np.issubdtype(signal.dtype, np.integer):
+                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
+                    arr[sample, feature, :] = signal.astype(np.int8)
+                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
+                    arr[sample, feature, :] = signal.astype(np.int16)
+                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
+                    arr[sample, feature, :] = signal.astype(np.int32)
+                else:
+                    arr[sample, feature, :] = signal.astype(np.int64)
+            else:
+                if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max:
+                    arr[sample, feature, :] = signal.astype(np.float16)
+                elif c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
+                    arr[sample, feature, :] = signal.astype(np.float32)
+                else:
+                    arr[sample, feature, :] = signal.astype(np.float64)
+    
+    # Calculate memory usage after type conversion
+    end_mem = arr.nbytes / 1024**2  # in MB
+    if verbose:
+        print('Mem. usage decreased to {:5.2f} Mb ({:.1f}% reduction)'.format(end_mem, 100 * (start_mem - end_mem) / start_mem))
+    
+    return arr
+
+
 
 # Preprocess each channel in a certain way based on EDA
 def fft_preprocessing(df_, fs, test=False):
@@ -148,6 +200,61 @@ def df_to_numpy(df, num_samples, num_channels, sample_size):
         reshaped_data.append(sample)
     
     return np.array(reshaped_data)
+
+
+def combine_raw_data(components, fault_type, sample_n, fs, folder_name=''):
+    '''
+    returns an array of raw data of shape (n_samples, n_features, n_datapoints)
+    '''
+    df = pd.DataFrame()
+    for component in components:
+        if folder_name != '':
+            data_df = pd.read_csv(f"{FINAL_TRAIN_DIR}/{folder_name}/{sample_n}/data_{component}.csv")
+        else:
+            data_df = pd.read_csv(f"{TRAIN_DIR}/{fault_type}/{sample_n}/data_{component}.csv")
+        df = pd.concat([df, data_df], axis=1)
+    
+    n_samples = len(df) // fs
+    n_features = len(df.columns)
+    df = reduce_mem_usage(df, verbose=False)
+    data_arr = df_to_numpy(df, n_samples, n_features, fs)
+    return data_arr
+
+
+def combine_test_raw_data(components, fault_type, sample_n, fs, final_stage=False, window=1):
+    '''
+    returns an array of raw data of shape (n_samples, n_features, n_datapoints)
+    '''
+    df = pd.DataFrame()
+    for component in components:
+        if final_stage:
+            data_df = pd.read_csv(f"{FINAL_TEST_DIR}/{sample_n}/data_{component}.csv")
+        else:
+            data_df = pd.read_csv(f"{TEST_DIR}/{sample_n}/data_{component}.csv")
+        df = pd.concat([df, data_df], axis=1)
+    
+    df = df.loc[(window-1)*fs:(window)*fs-1].reset_index(drop=True)
+    n_samples = len(df) // fs
+    n_features = len(df.columns)
+    df = reduce_mem_usage(df, verbose=False)
+    data_arr = df_to_numpy(df, n_samples, n_features, fs)
+    return data_arr
+
+
+def calc_fft(data_arr):
+    '''
+    calculate the FFT of an array ith shape (n_samples, n_features, n_datapoints)
+    '''
+    n_samples, n_features, n_datapoints = data_arr.shape
+    out = np.zeros((n_samples, n_features, n_datapoints//2), dtype=np.float32)
+
+    for i in range(n_samples):  
+        for col in range(n_features):
+            signal = data_arr[i, col, :]
+            fft_result = np.fft.rfft(signal)
+            out[i, col, :] = abs(fft_result[:n_datapoints//2])
+    return out
+
 
 # Get data from all features
 def get_features(components, fault_type, sample_n, fs, folder_name=''):
@@ -296,6 +403,107 @@ def get_fundamental_frequency(fft_signal_, sampling_rate):
 
     return fundamental_frequency
 
+
+def get_speed_wc_arr(data_arr_):
+    data_arr = data_arr_.copy()
+    n_samples, n_channels, n_timesteps = data_arr.shape
+    speed_wc = np.zeros((n_samples))
+    for i in range(n_samples):
+        fft_signal = abs(np.fft.rfft(data_arr[i,7,:]))[:n_timesteps//2]
+        fundamental_frequency = np.argmax(fft_signal)
+        speed_wc[i] = round_to_nearest(fundamental_frequency, [20,40,60])
+    return speed_wc
+
+
+'''def normalize_signal(data_arr, working_conditions, conditions_means=None, conditions_stds=None):
+    """
+    Normalize the signal data for each working condition and each channel.
+    data_arr: (n_samples, n_channels, n_datapoints)
+    working_conditions: (n_samples,) with the working condition labels (20Hz, 40Hz, 60Hz)
+    """
+    n_samples, n_channels, n_datapoints = data_arr.shape
+    normalized_data = np.copy(data_arr)
+
+    # Iterate over working conditions and normalize each channel per condition
+    for condition in np.unique(working_conditions):
+        condition_mask = (working_conditions == condition)
+        for col in range(n_channels):
+            # Normalize the signal for this channel and condition
+            channel_data = normalized_data[condition_mask, col, :]
+            channel_data = np.log1p(np.abs(channel_data))
+            mean = np.mean(channel_data, axis=0)
+            std = np.std(channel_data, axis=0)
+            # Avoid division by zero
+            std[std == 0] = 1
+            normalized_data[condition_mask, col, :] = (channel_data - mean) / std
+
+    return normalized_data'''
+
+
+def normalize_data(data_arr, working_conditions, condition_means, condition_stds):
+    """
+    Normalize signal data for each working condition and each channel.
+    This function can handle both single samples and batches of samples.
+
+    data_arr: (n_samples, n_channels, n_datapoints) or (n_channels, n_datapoints)
+    working_conditions: (n_samples,) with the working condition labels (e.g., 20Hz, 40Hz, etc.)
+    condition_means: dictionary with means for each condition
+    condition_stds: dictionary with stds for each condition
+    """
+    
+    # Check if data_arr is a single sample (2D) or batch of samples (3D)
+    if len(data_arr.shape) == 2:  # Single sample: (n_channels, n_datapoints)
+        data_arr = data_arr[None, :, :]  # Add a batch dimension
+
+    n_samples, n_channels, n_datapoints = data_arr.shape
+    normalized_data = np.copy(data_arr)
+
+    # Iterate over working conditions and normalize each channel per condition
+    for condition in np.unique(working_conditions):
+        condition_mask = (working_conditions == condition)
+        
+        # Process all samples that belong to this condition
+        for sample_idx in range(n_samples):
+            if not condition_mask[sample_idx]:
+                continue  # Skip samples that don't belong to this condition
+            
+            # Normalize each channel for this condition
+            for col in range(n_channels):
+                channel_data = normalized_data[sample_idx, col, :]
+                channel_data = np.log1p(np.abs(channel_data))  # Log-transform
+                mean = condition_means[condition][col]  # Mean for the condition and channel
+                std = condition_stds[condition][col]  # Std for the condition and channel
+                
+                # Avoid division by zero
+                if std == 0:
+                    std = 1
+                
+                normalized_data[sample_idx, col, :] = (channel_data - mean) / std
+    
+    return normalized_data
+
+
+
+def compute_condition_stats(data_arr, working_conditions):
+    """
+    Compute the mean and standard deviation for each working condition and each channel.
+    data_arr: (n_samples, n_channels, n_datapoints)
+    working_conditions: (n_samples,) with the working condition labels (20Hz, 40Hz, 60Hz)
+    """
+    n_samples, n_channels, n_datapoints = data_arr.shape
+    condition_means = {}
+    condition_stds = {}
+
+    for condition in np.unique(working_conditions):
+        condition_mask = (working_conditions == condition)
+        condition_data = data_arr[condition_mask]
+        condition_means[condition] = np.mean(np.log1p(np.abs(condition_data)), axis=(0, 1))  # Mean over samples and channels
+        condition_stds[condition] = np.std(np.log1p(np.abs(condition_data)), axis=(0, 1))   # Std over samples and channels
+
+    return condition_means, condition_stds
+
+
+
 def plot_train_val_loss(dir:str, filenames: list=None, n_rows:int=3):
     '''
     Plot the training and validation loss history for each binary classifier. 
@@ -442,4 +650,47 @@ def plot_latent_space(latent_2d, labels, filename='latent_space.pdf', title="Lat
     plt.tight_layout()
     plt.savefig(filename, dpi=300)
     plt.clf()
+
+
+
+# Visualize the latent space
+def plot_latent_space_3d(latent_3d, labels, filename='latent_space.pdf', title="Latent Space Visualization"):
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Assuming labels are binary (0 for normal, 1 for anomaly)
+    ax.scatter(latent_3d[labels == 0, 0], latent_3d[labels == 0, 1], latent_3d[labels == 0, 2], color='blue', label='Normal', alpha=0.5)
+    ax.scatter(latent_3d[labels == 1, 0], latent_3d[labels == 1, 1], latent_3d[labels == 1, 2], color='red', label='Anomaly', alpha=0.5)
+    
+    ax.set_title(title)
+    ax.set_xlabel("Latent Dimension 1")
+    ax.set_ylabel("Latent Dimension 2")
+    ax.set_zlabel("Latent Dimension 3")
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
+    plt.clf()
+
+
+
+def print_memory_usage():
+    # Get memory usage in MB
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+    print(f"Memory Usage: {memory_info.rss / 1024 ** 2:.2f} MB")
+
+
+def init_linear_weights(m):
+    if isinstance(m, torch.nn.Linear):
+        torch.nn.init.xavier_normal_(m.weight)
+        if m.bias is not None:
+            torch.nn.init.zeros_(m.bias)
+
+def init_conv_weights(m):
+    if isinstance(m, torch.nn.Conv1d):
+        torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        if m.bias is not None:
+            torch.nn.init.zeros_(m.bias)
+
+
 
