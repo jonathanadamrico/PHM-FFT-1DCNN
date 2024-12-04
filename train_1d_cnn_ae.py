@@ -18,9 +18,9 @@ torch.cuda.empty_cache()
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from torch.optim.lr_scheduler import ExponentialLR
+from torch.optim.lr_scheduler import ExponentialLR, ReduceLROnPlateau
 
-from utils.functions import get_features, scale_per_sensor, scale_per_sample, plot_latent_space
+from utils.functions import *
 from utils.classes import AutoencoderFC_flatten, CNNFeatureExtractor, Classifier, ConvAutoencoder, VAE
 
 TRAIN_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Training data"
@@ -32,16 +32,12 @@ AUG_TRAIN_DIR = "Data_Augmentation/Prelim_Train"
 
 EXT_FEAT_DIR = "extracted_features"
 
-load_model = False
+load_model = True
 quick_load = True
-quick_load_holdout = True
-quick_load_infer = True
 fs = 64000
 anomaly_type = sys.argv[1] 
 print(anomaly_type)
 SEED = 163
-n_features = 21
-n_timesteps = 32000
 
 component_fault = {
 "motor": ["TYPE1","TYPE2","TYPE3","TYPE4"],
@@ -120,10 +116,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if quick_load:
 
-    X_train = np.load(f"Quick imports/X_train_ae_{anomaly_type}.npy")
-    y_train = np.load(f"Quick imports/y_train_ae_{anomaly_type}.npy")
-    X_val = np.load(f"Quick imports/X_val_ae_{anomaly_type}.npy")
-    y_val = np.load(f"Quick imports/y_val_ae_{anomaly_type}.npy")
+    X_train = np.load(f"Quick imports/X_train_fft_{anomaly_type}.npy")
+    y_train = np.load(f"Quick imports/y_train_fft_{anomaly_type}.npy")
+    X_val = np.load(f"Quick imports/X_val_fft_{anomaly_type}.npy")
+    y_val = np.load(f"Quick imports/y_val_fft_{anomaly_type}.npy")
     print(X_train.shape, y_train.shape, X_val.shape, y_val.shape)
 else:
 
@@ -136,7 +132,8 @@ else:
         
         for n_sample in range(1,4):
             sample_n = f"Sample{n_sample}"
-            normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs)
+            #normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs)
+            normal_temp = combine_raw_data(components, fault_type, sample_n, fs)
             if len(normal_temp) == 0:
                 continue
             if type(normal_arr) == type(None):
@@ -151,7 +148,8 @@ else:
             total_samples = len(os.listdir(os.path.join(FINAL_TRAIN_DIR,folder_name)))
             for n_sample in range(1,total_samples+1):
                 sample_n = f"Sample_{n_sample}"
-                normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs, folder_name=folder_name)
+                #normal_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs, folder_name=folder_name)
+                normal_temp = combine_raw_data(components, fault_type, sample_n, fs, folder_name)
                 if len(normal_temp) == 0:
                         continue
                 if type(normal_arr) == type(None):
@@ -166,7 +164,8 @@ else:
         if anomaly_type == "TYPE17":
             break
         sample_n = f"Sample{n_sample}"
-        anomaly_temp = get_features(components, fault_type=anomaly_type, sample_n=sample_n, fs=fs)
+        #anomaly_temp = get_features(components, fault_type=anomaly_type, sample_n=sample_n, fs=fs)
+        anomaly_temp = combine_raw_data(components, anomaly_type, sample_n, fs)
         if len(anomaly_temp) == 0:
                 continue
         if type(anomaly_arr) == type(None):
@@ -180,7 +179,8 @@ else:
             total_samples = len(os.listdir(os.path.join(FINAL_TRAIN_DIR,folder_name)))
             for n_sample in range(1,total_samples+1):
                 sample_n = f"Sample_{n_sample}"
-                anomaly_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs, folder_name=folder_name)
+                #anomaly_temp = get_features(components, fault_type=fault_type, sample_n=sample_n, fs=fs, folder_name=folder_name)
+                anomaly_temp = combine_raw_data(components, fault_type, sample_n, fs, folder_name)
                 if len(anomaly_temp) == 0:
                         continue
                 if type(anomaly_arr) == type(None):
@@ -192,10 +192,10 @@ else:
     print(anomaly_arr.shape)
 
     # Only the first axis is shuffled. The contents remain the same.
-    np.random.seed(SEED)
-    np.random.shuffle(anomaly_arr)
-    np.random.seed(SEED)
-    np.random.shuffle(normal_arr)
+    #np.random.seed(SEED)
+    #np.random.shuffle(anomaly_arr)
+    #np.random.seed(SEED)
+    #np.random.shuffle(normal_arr)
 
     # Build a X_train, y_train, X_val, y_val from normal_arr and anomaly_arr
     # 80% train 20% validation
@@ -216,34 +216,71 @@ else:
     del normal_arr, anomaly_arr, normal_temp, anomaly_temp
     gc.collect()
 
-    np.save(f"Quick imports/X_train_ae_{anomaly_type}.npy", X_train)
-    np.save(f"Quick imports/y_train_ae_{anomaly_type}.npy", y_train)
-    np.save(f"Quick imports/X_val_ae_{anomaly_type}.npy", X_val)
-    np.save(f"Quick imports/y_val_ae_{anomaly_type}.npy", y_val)
-
-    
-
+    np.save(f"Quick imports/X_train_raw_{anomaly_type}.npy", X_train)
+    np.save(f"Quick imports/y_train_raw_{anomaly_type}.npy", y_train)
+    np.save(f"Quick imports/X_val_raw_{anomaly_type}.npy", X_val)
+    np.save(f"Quick imports/y_val_raw_{anomaly_type}.npy", y_val)
+'''
 y_train = y_train.reshape(-1,1)
 y_val = y_val.reshape(-1,1)
 
-# Generate a random permutation
+plt.plot(X_val[2,7,:])
+plt.savefig('X_val.png')
+plt.clf()
+
+train_speed_wc = get_speed_wc_arr(X_train)
+condition_means, condition_stds = compute_condition_stats(X_train, train_speed_wc)
+X_train = normalize_data(X_train, train_speed_wc, condition_means, condition_stds)
+val_speed_wc = get_speed_wc_arr(X_val)
+X_val = normalize_data(X_val, val_speed_wc, condition_means, condition_stds)
+
+del train_speed_wc
+gc.collect()
+
+plt.plot(X_val[2,7,:])
+plt.savefig('X_val_normalized.png')
+plt.clf()
+
+X_train = calc_fft(X_train)
+X_val = calc_fft(X_val)
+
+plt.plot(X_val[2,7,:])
+plt.savefig('X_val_fft.png')
+plt.clf()
+
+#X_train = reduce_mem_usage_array(X_train)
+#X_val = reduce_mem_usage_array(X_val)
+
+np.save(f"Quick imports/X_train_fft_{anomaly_type}.npy", X_train)
+np.save(f"Quick imports/y_train_fft_{anomaly_type}.npy", y_train)
+np.save(f"Quick imports/X_val_fft_{anomaly_type}.npy", X_val)
+np.save(f"Quick imports/y_val_fft_{anomaly_type}.npy", y_val)'''
+
+'''# Generate a random permutation
 permutation_train = np.random.permutation(len(X_train))
 
 # Shuffle both arrays using the same permutation
 X_train = X_train[permutation_train]
-y_train = y_train[permutation_train]
-
-anomaly_len = sum(y_train)[0]
-normal_len = len(y_train) - anomaly_len
-print(anomaly_len, normal_len)
+y_train = y_train[permutation_train]'''
 
 # Data scaling
 scalers = []
 for n_scaler in range(X_train.shape[1]):
-    scaler = MinMaxScaler((0,1))
-    X_train[:,n_scaler,:] = scaler.fit_transform(X_train[:,n_scaler,:])
-    X_val[:,n_scaler,:] = scaler.transform(X_val[:,n_scaler,:])
-    scalers.append(scaler)
+    min_val = np.min(X_train[:,n_scaler,:])
+    max_val = np.max(X_train[:,n_scaler,:])
+    X_train[:,n_scaler,:] = (X_train[:,n_scaler,:] - min_val) / (max_val - min_val)
+    X_val[:,n_scaler,:] = (X_val[:,n_scaler,:] - min_val) / (max_val - min_val)
+    scalers.append([min_val,max_val])
+np.save(f'saved_scalers/scaler_ae_{anomaly_type}.npy', np.array(scalers))
+    
+'''plt.plot(X_val[2,7,:])
+plt.savefig('X_val_fft_scaled.png')
+plt.clf()'''
+
+
+anomaly_len = sum(y_train)[0]
+normal_len = len(y_train) - anomaly_len
+print(anomaly_len, normal_len)
 
 normal_data = X_train[y_train.flatten() == 0]
 normal_val_data = X_val[y_val.flatten() == 0]
@@ -251,7 +288,6 @@ print(f"Train-Val shape", normal_data.shape, normal_val_data.shape)
 
 normal_data = torch.tensor(normal_data, dtype=torch.float32).to(device)
 normal_val_data = torch.tensor(normal_val_data, dtype=torch.float32).to(device)
-
 
 # fit and evaluate a model using pytorch
 def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
@@ -266,9 +302,9 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     y_val = torch.tensor(y_val, dtype=torch.float32).to(device)
 
     # Instantiate the model
-    input_channels = n_features  # Number of channels
-    input_length = n_timesteps  # Length of each signal (time steps)
-    latent_dim = 32  # Size of the latent space
+    input_channels = X_train.shape[1]  # Number of channels
+    input_length = X_train.shape[2]  # Length of each signal (time steps)
+    latent_dim = 128  # Size of the latent space
 
     # Define model
     cnn_output_size = 32 * (input_length // 1)
@@ -285,13 +321,20 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     # Initialize Classifier model
     classifier = Classifier(latent_dim=latent_dim).to(device)
 
+    # Initialize weights
+    cnn.apply(init_linear_weights)
+    cnn.apply(init_conv_weights)
+    autoencoder.apply(init_linear_weights)
+    classifier.apply(init_linear_weights)
+
     # Loss and optimizer for the classifier
     pos_weight = class_weights[1] / class_weights[0]  # Calculate the positive weight
     classifier_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     criterion = nn.MSELoss()
     lr_decay_rate = 0.1
     lr_decay_steps = 10000
-    optimizer = optim.SGD(list(autoencoder.parameters())+list(classifier.parameters()), lr=1e-4, momentum=0.9, nesterov=True)
+    #optimizer = optim.SGD(list(cnn.parameters()) + list(autoencoder.parameters()) + list(classifier.parameters()), lr=1e-4, momentum=0.9, nesterov=True)
+    optimizer = optim.SGD(list(cnn.parameters()) + list(autoencoder.parameters()), lr=1e-4, momentum=0.9, nesterov=True)
     scheduler = ExponentialLR(optimizer, lr_decay_rate**(1.0 / lr_decay_steps))
     lambda_reconstruction = 1.0
 
@@ -308,6 +351,8 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
             classifier.train()
             train_loss = 0
 
+            print_memory_usage()
+
             # Shuffle both arrays using the same permutation
             '''permutation_train = np.random.permutation(len(X_train))
             X_train = X_train[permutation_train]
@@ -316,11 +361,15 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
             permutation_train = np.random.permutation(len(normal_data))
             X_train_normal = normal_data[permutation_train]
             # Iterate over batches
-            for i in range(0, len(X_train), batch_size):
-                batch_X = X_train[i:i+batch_size]
-                batch_y = y_train[i:i+batch_size]
+            for i in range(0, len(normal_data), batch_size):
+                '''batch_X = X_train[i:i+batch_size]
+                batch_y = y_train[i:i+batch_size]'''
 
-                #batch_X = X_train_normal[i:i+batch_size]
+                batch_X = X_train_normal[i:i+batch_size]
+
+                if batch_X.cpu().numpy().shape[0] < 2:
+                    print(batch_X.shape)
+                    break
 
                 # Pass through CNN feature extractor
                 cnn_features = cnn(batch_X)
@@ -339,10 +388,31 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
 
                 # Compute the loss = reconstruction loss + classification loss
                 kl_divergence = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
-                loss = criterion(outputs, inputs) + kl_divergence  + lambda_reconstruction * classifier_criterion(logits, batch_y) 
+                loss = criterion(outputs, inputs) + kl_divergence 
+                #loss = criterion(outputs, inputs) + kl_divergence  + lambda_reconstruction * classifier_criterion(logits, batch_y) 
                 loss.backward()
-                train_loss += loss
+                train_loss += loss / batch_X.cpu().numpy().shape[0]
                 
+                # Check for exploding/vanishing gradients
+                total_norm = 0
+                for param in autoencoder.parameters():
+                    if param.grad is not None:
+                        total_norm += param.grad.data.norm(2).item()**2
+                total_norm = total_norm**(1./2)
+
+                # Gradient clipping
+                #torch.nn.utils.clip_grad_norm_(autoencoder.parameters(), max_norm=1.0)
+
+                # Optionally, log it, or check if it exceeds a threshold
+                if total_norm > 1000:  # This is an arbitrary threshold for exploding gradients
+                    print("Exploding gradients detected!")
+                    print(f'Gradient norm: {total_norm}')
+                    continue
+                elif total_norm < 1e-5:  # Threshold for vanishing gradients
+                    print("Vanishing gradients detected!")
+                    print(f'Gradient norm: {total_norm}')
+                    continue
+
                 # Update the weights
                 optimizer.step()
                 scheduler.step()
@@ -353,17 +423,19 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
 
             with torch.no_grad():  # No need to track gradients during evaluation
                 val_loss = 0 
-                for i in range(0, len(X_val), batch_size):
-                    batch_X = X_val[i:i+batch_size]
-                    batch_y = y_val[i:i+batch_size]
-                    #batch_X = normal_val_data[i:i+batch_size]
+                for i in range(0, len(normal_val_data), batch_size):
+                    '''batch_X = X_val[i:i+batch_size]
+                    batch_y = y_val[i:i+batch_size]'''
+                    batch_X = normal_val_data[i:i+batch_size]
                     cnn_features = cnn(batch_X)  
                     cnn_features_flat = cnn_features.view(cnn_features.size(0), -1) 
                     val_outputs, mu, log_var = autoencoder(cnn_features_flat)
                     z = autoencoder.reparameterize(mu, log_var)
                     logits = classifier(z)
                     kl_divergence = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
-                    val_loss += criterion(val_outputs, cnn_features_flat) + kl_divergence + lambda_reconstruction * classifier_criterion(logits, batch_y) 
+                    loss += criterion(val_outputs, cnn_features_flat) + kl_divergence 
+                    #loss += criterion(val_outputs, cnn_features_flat) + kl_divergence + lambda_reconstruction * classifier_criterion(logits, batch_y) 
+                    val_loss += loss / batch_X.cpu().numpy().shape[0]
 
             print((f"\n Epoch {epoch}/{epochs} | train loss: {train_loss.item():.4f} | validation loss: {val_loss.item():.4f}"))
             history[f"train"].append(train_loss.item())
@@ -372,6 +444,7 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
             # save model
             if val_loss.item() <= best_val_loss:
                 torch.save(autoencoder.state_dict(), 'saved_models'+'/'+f'autoencoder_{anomaly_type}.pth')
+                torch.save(cnn.state_dict(), 'saved_models'+'/'+f'cnn_{anomaly_type}.pth')
                 best_val_loss = val_loss.item()
 
         pd.DataFrame(history).to_csv(f"train_history/autoencoder_{anomaly_type}.csv", index=False)
@@ -381,12 +454,13 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     #autoencoder = AutoencoderFC_flatten(cnn_output_size, latent_dim=latent_dim).to(device)
     autoencoder = VAE(cnn_output_size, latent_dim).to(device)
     autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_{anomaly_type}.pth', weights_only=False, map_location=device))
+    cnn = CNNFeatureExtractor(input_channels, input_length).to(device)
+    cnn.load_state_dict(torch.load('saved_models'+'/'+f'cnn_{anomaly_type}.pth', weights_only=False, map_location=device))
     cnn.eval()
     autoencoder.eval()  # Set to evaluation mode
 
-
     # Visualize 1DCNN feature space
-    latent_2d_tsne_all = []
+    '''latent_2d_tsne_all = []
     for i in range(0, len(X_val), batch_size):
         batch_X = X_val[i:i+batch_size]
         batch_y = y_val[i:i+batch_size]
@@ -426,23 +500,28 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     del latent_2d_tsne_all, latent_2d_tsne, cnn_features_flat
     gc.collect()
 
-    exit()
+    exit()'''
 
     # class weights for imbalanced data
-    weight_for_0 = torch.tensor(1.0 / normal_len, dtype=torch.float32).to(device)
-    weight_for_1 = torch.tensor(1.0 / anomaly_len, dtype=torch.float32).to(device)
+    #weight_for_0 = torch.tensor(1.0 / normal_len, dtype=torch.float32).to(device)
+    #weight_for_1 = torch.tensor(1.0 / anomaly_len, dtype=torch.float32).to(device)
+    weight_for_0 = torch.tensor(anomaly_len / (normal_len + anomaly_len), dtype=torch.float32).to(device)
+    weight_for_1 = torch.tensor(normal_len / (normal_len + anomaly_len), dtype=torch.float32).to(device)
     class_weights = torch.tensor([weight_for_0, weight_for_1]).to(device)
 
     # Initialize Classifier model
-    classifier = Classifier(latent_dim=latent_dim).to(device)
+    classifier = Classifier(latent_dim=cnn_output_size).to(device)
+    classifier.apply(init_linear_weights)
 
     # Loss and optimizer for the classifier
     pos_weight = class_weights[1] / class_weights[0]  # Calculate the positive weight
     classifier_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     lr_decay_rate = 0.1
     lr_decay_steps = 10000
-    classifier_optimizer = optim.SGD(classifier.parameters(), lr=1e-4, momentum=0.9, nesterov=True)
-    scheduler = ExponentialLR(classifier_optimizer, lr_decay_rate**(1.0 / lr_decay_steps))
+    #classifier_optimizer = optim.SGD(classifier.parameters(), lr=1e-3, momentum=0.9, nesterov=True)
+    classifier_optimizer = optim.Adam(classifier.parameters(), lr=1e-3)
+    #scheduler = ExponentialLR(classifier_optimizer, lr_decay_rate**(1.0 / lr_decay_steps))
+    scheduler = ReduceLROnPlateau(classifier_optimizer, 'min', patience=5, factor=0.5)
 
     batch_size, epochs = 32, 100
 
@@ -463,6 +542,9 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
             batch_X = X_train[i:i+batch_size]
             batch_y = y_train[i:i+batch_size]
         
+            if batch_X.cpu().numpy().shape[0] < 2:
+                break
+
             cnn_features = cnn(batch_X)
             inputs = cnn_features.view(cnn_features.size(0), -1) 
             _, mu, log_var = autoencoder(inputs)
@@ -471,16 +553,34 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
             classifier_optimizer.zero_grad()
 
             # Forward pass
-            outputs = classifier(z)
+            outputs = classifier(inputs)
 
             # Compute loss
             loss = classifier_criterion(outputs, batch_y)
 
             # Backpropagation
             loss.backward()
+
+            # Check for exploding/vanishing gradients
+            total_norm = 0
+            for param in classifier.parameters():
+                if param.grad is not None:
+                    total_norm += param.grad.data.norm(2).item()**2
+            total_norm = total_norm**(1./2)
+            
+            # check if it exceeds a threshold
+            if total_norm > 1000:  # arbitrary threshold for exploding gradients
+                print("Exploding gradients detected!")
+                print(f'Gradient norm: {total_norm}')
+                continue
+            elif total_norm < 1e-5:  # Threshold for vanishing gradients
+                print("Vanishing gradients detected!")
+                print(f'Gradient norm: {total_norm}')
+                continue
+
             classifier_optimizer.step()
             train_loss += loss
-            scheduler.step()
+        scheduler.step(train_loss)
 
         # Validation loss
         classifier.eval()
@@ -495,7 +595,7 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
                 inputs = cnn_features.view(cnn_features.size(0), -1) 
                 _, mu, log_var = autoencoder(inputs)
                 z = autoencoder.reparameterize(mu, log_var)
-                y_pred = classifier(z)
+                y_pred = classifier(inputs)
                 loss = classifier_criterion(y_pred, batch_y)
                 val_loss += loss
 
@@ -512,10 +612,37 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     pd.DataFrame(history).to_csv(f"train_history/classifier_{anomaly_type}.csv", index=False)
 
     # Evaluate the classifier on validation data
-    classifier = Classifier(latent_dim=latent_dim).to(device)
+    classifier = Classifier(latent_dim=cnn_output_size).to(device)
     classifier.load_state_dict(torch.load('saved_models'+'/'+f'classifier_{anomaly_type}.pth', weights_only=False, map_location=device))
     classifier.eval()
     with torch.no_grad():
+
+        y_preds = []
+        # Iterate over batches
+        for i in range(0, len(X_train), batch_size):
+            batch_X = X_train[i:i+batch_size]
+            batch_y = y_train[i:i+batch_size]
+
+            cnn_features = cnn(batch_X)
+            inputs = cnn_features.view(cnn_features.size(0), -1) 
+            _, mu, log_var = autoencoder(inputs)
+            z = autoencoder.reparameterize(mu, log_var)
+            y_pred = classifier(inputs).squeeze()
+            y_pred = (y_pred > 0.5).float().cpu().numpy()  # Apply threshold at 0.5 for binary classification
+            if inputs.cpu().numpy().shape[0] < 2:
+                break
+            y_preds.extend(y_pred)
+
+        y_train = y_train.squeeze().cpu().numpy()[:len(y_preds)]
+
+        # Compute metrics
+        accuracy = accuracy_score(y_train, y_preds)
+        precision = precision_score(y_train, y_preds)
+        recall = recall_score(y_train, y_preds)
+        f1 = f1_score(y_train, y_preds)
+        z_metric = 0.4*accuracy + 0.2*precision + 0.2*recall + 0.2*f1
+        print(f"Train | Accuracy: {accuracy:.4f} | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f} | Z: {z_metric:.4f}")
+
         y_preds = []
         # Iterate over batches
         for i in range(0, len(X_val), batch_size):
@@ -526,7 +653,7 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
             inputs = cnn_features.view(cnn_features.size(0), -1) 
             _, mu, log_var = autoencoder(inputs)
             z = autoencoder.reparameterize(mu, log_var)
-            y_pred = classifier(z).squeeze()
+            y_pred = classifier(inputs).squeeze()
             print(y_pred)
             y_pred = (y_pred > 0.5).float().cpu().numpy()  # Apply threshold at 0.5 for binary classification
             if inputs.cpu().numpy().shape[0] < 2:
@@ -536,7 +663,6 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
         y_val = y_val.squeeze().cpu().numpy()[:len(y_preds)]
 
         print(y_val)
-        
 
         # Compute metrics
         accuracy = accuracy_score(y_val, y_preds)
@@ -544,8 +670,7 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
         recall = recall_score(y_val, y_preds)
         f1 = f1_score(y_val, y_preds)
         z_metric = 0.4*accuracy + 0.2*precision + 0.2*recall + 0.2*f1
-        print(f"Accuracy: {accuracy:.4f} | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f} | Z: {z_metric:.4f}")
-
+        print(f"Val | Accuracy: {accuracy:.4f} | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f} | Z: {z_metric:.4f}")
 
 train_autoencoder_classifier(X_train, y_train, X_val, y_val)
 
