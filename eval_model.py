@@ -5,6 +5,7 @@ import numpy as np
 import sys
 
 from utils.metrics import calc_overall_metric
+from utils.functions import *
 
 THRESHOLD = 0.5
 PREDS_DIR = "preds_1dcnn"
@@ -43,9 +44,16 @@ for n in range(1,18):
     if n==1:
         df = pd.read_csv(f"{PREDS_DIR}/preds_{type_to_fault[anomaly_type]}_1dcnn.csv")
         df = df[df.columns[0:2]]
+        if sys.argv[1] == 'final':
+            # Apply the averaging function to each row of the dataframe
+            df[f'{type_to_fault[anomaly_type]}'] = df[f'{type_to_fault[anomaly_type]}'].apply(calculate_mean)
         continue
     df_ = pd.read_csv(f"{PREDS_DIR}/preds_{type_to_fault[anomaly_type]}_1dcnn.csv")
     df = df.merge(df_[df_.columns[0:2]], on='sample')
+
+    if sys.argv[1] == 'final':
+        # Apply the function to each row of the dataframe
+        df[f'{type_to_fault[anomaly_type]}'] = df[f'{type_to_fault[anomaly_type]}'].apply(calculate_mean)
 
 # create labels from the compiled preds
 for sample in range(1, len(df)+1):

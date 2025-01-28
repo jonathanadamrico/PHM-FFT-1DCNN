@@ -6,5 +6,5 @@ import os
 
 for n_fault_type in range(1,18):
     fault_type = f"TYPE{n_fault_type}"
-    os.system(f"python3 infer_fft-convAE.py {fault_type}")
-
+    #os.system(f"python3 m2_1d_cnn_ae.py {fault_type}")
+    os.system(f"python3 train_fft-convAE.py {fault_type} > train_logs/train_logs_{fault_type}.txt")
