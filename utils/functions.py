@@ -38,6 +38,15 @@ EXT_FEAT_DIR = "extracted_features"
 #
 #======================#
 
+# Function to clean the string and calculate the mean for each row
+def calculate_mean(row):
+    # Step 1: Clean and convert the string to a NumPy array
+    cleaned_data = row.replace('\n', '').replace('[', '').replace(']', '').split()
+    data_array = np.array(cleaned_data, dtype=float)
+    
+    # Step 2: Calculate the mean of the array
+    return np.mean(data_array)
+
 def reduce_mem_usage(df, verbose=True):
     numerics = ['int16', 'int32', 'int64', 'float16', 'float32', 'float64']
     start_mem = df.memory_usage().sum() / 1024**2    
@@ -233,7 +242,7 @@ def combine_test_raw_data(components, fault_type, sample_n, fs, final_stage=Fals
             data_df = pd.read_csv(f"{TEST_DIR}/{sample_n}/data_{component}.csv")
         df = pd.concat([df, data_df], axis=1)
     
-    df = df.loc[(window-1)*fs:(window)*fs-1].reset_index(drop=True)
+    #df = df.loc[(window-1)*fs:(window)*fs-1].reset_index(drop=True)
     n_samples = len(df) // fs
     n_features = len(df.columns)
     df = reduce_mem_usage(df, verbose=False)
@@ -672,6 +681,21 @@ def plot_latent_space_3d(latent_3d, labels, filename='latent_space.pdf', title="
     plt.clf()
 
 
+def plot_3d(array, filename, title):
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_title(title)
+    x = np.linspace(1, array.shape[1], array.shape[1])
+    for z in range(1,array.shape[0]+1):
+        y = array[z-1,:]
+        ax.plot(x, y, z, zdir='y')
+
+    ax.set_xlabel("Timestep")
+    ax.set_ylabel("Channel")
+    ax.set_zlabel("Amplitude")
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
+    plt.clf()
 
 def print_memory_usage():
     # Get memory usage in MB
