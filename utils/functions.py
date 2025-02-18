@@ -448,8 +448,8 @@ def get_speed_wc_arr(data_arr_):
 
     return normalized_data'''
 
-
-def normalize_data(data_arr, working_conditions, condition_means, condition_stds):
+# if we want to normalize the data by standard scaling mean and stdev
+'''def normalize_data(data_arr, working_conditions, condition_means, condition_stds):
     """
     Normalize signal data for each working condition and each channel.
     This function can handle both single samples and batches of samples.
@@ -489,7 +489,65 @@ def normalize_data(data_arr, working_conditions, condition_means, condition_stds
                 
                 normalized_data[sample_idx, col, :] = (channel_data - mean) / std
     
-    return normalized_data
+    return normalized_data'''
+
+
+def normalize_data(data_arr_, working_conditions, min_max_values=None):
+    """
+    Normalize signal data for each working condition and each channel to the range [0, 1].
+    This function can handle both single samples and batches of samples.
+
+    data_arr: (n_samples, n_channels, n_datapoints) or (n_channels, n_datapoints)
+    working_conditions: (n_samples,) with the working condition labels (e.g., 20Hz, 40Hz, etc.)
+    min_max_values: Optional input array containing min and max values for each channel
+                    to be used for normalizing validation or test sets.
+                    Shape should be (n_channels, 2), where each row is [min, max]
+    """
+    data_arr = data_arr_.copy()
+    # Check if data_arr is a single sample (2D) or batch of samples (3D)
+    if len(data_arr.shape) == 2:  # Single sample: (n_channels, n_datapoints)
+        data_arr = data_arr[None, :, :]  # Add a batch dimension
+
+    n_samples, n_channels, n_datapoints = data_arr.shape
+    normalized_data = np.copy(data_arr)
+
+    # If no min_max_values provided, calculate from the training data
+    if min_max_values is None:
+        min_max_values = np.zeros((n_channels, 2))
+        
+        # Iterate over working conditions to find min and max for each channel
+        for condition in np.unique(working_conditions):
+            condition_mask = (working_conditions == condition)
+            
+            # Process all samples that belong to this condition
+            for sample_idx in range(n_samples):
+                if not condition_mask[sample_idx]:
+                    continue  # Skip samples that don't belong to this condition
+                
+                # Find min and max for each channel
+                for col in range(n_channels):
+                    channel_data = data_arr[sample_idx, col, :]
+                    min_val = np.min(channel_data)
+                    max_val = np.max(channel_data)
+                    
+                    min_max_values[col, 0] = min(min_max_values[col, 0], min_val) if min_max_values[col, 0] != 0 else min_val
+                    min_max_values[col, 1] = max(min_max_values[col, 1], max_val)
+
+    # Normalize data using provided or calculated min and max values
+    for sample_idx in range(n_samples):
+        for col in range(n_channels):
+            channel_data = normalized_data[sample_idx, col, :]
+            min_val = min_max_values[col, 0]
+            max_val = min_max_values[col, 1]
+            
+            # Avoid division by zero
+            if max_val == min_val:
+                normalized_data[sample_idx, col, :] = 0  # or any other constant value
+            else:
+                normalized_data[sample_idx, col, :] = (channel_data - min_val) / (max_val - min_val)
+    
+    return normalized_data, min_max_values
+
 
 
 
@@ -535,13 +593,18 @@ def plot_train_val_loss(dir:str, filenames: list=None, n_rows:int=3):
                 continue
             df = pd.read_csv(f'{dir}/{filenames[file_n]}')
             axs[i,j].plot(df['train'], label='train')
-            axs[i,j].plot(df['val'], label='val')
+            #axs[i,j].plot(df['val'], label='val')
             axs[i,j].set_title(f'TYPE{file_n + 1}')
             axs[i,j].set_xlabel('Epochs')
             axs[i,j].set_ylabel('Loss')
 
+            # Secondary y-axis for 'val'
+            ax2 = axs[i, j].twinx()
+            ax2.plot(df['val'], label='val', color='orange')
+
             # Add legend
-            axs[i, j].legend()
+            axs[i, j].legend(loc='upper left')
+            ax2.legend(loc='upper right')
 
             file_n += 1
 
@@ -549,7 +612,7 @@ def plot_train_val_loss(dir:str, filenames: list=None, n_rows:int=3):
     plt.savefig('train_val_loss.pdf', dpi=300)
 
 
-def plot_confusion_matrix(y_true, y_pred, title):
+def plot_confusion_matrix(y_true, y_pred, title, normalize):
     # Define fault types (17 classes)
     faults = {'M0':0,'M1':0,'M2':0,'M3':0,'M4':0,
               'G0':0,'G1':0,'G2':0,'G3':0,'G4':0,'G5':0,'G6':0,'G7':0,'G8':0,
@@ -562,6 +625,16 @@ def plot_confusion_matrix(y_true, y_pred, title):
 
     # Compute confusion matrix
     mcm = multilabel_confusion_matrix(y_true, y_pred)
+    fmt = 'd'
+
+    # Normalize
+    if normalize:
+        mcm = mcm.astype(float)
+        fmt = '.2f'
+        for i in range(mcm.shape[0]):
+            row_sum = mcm[i].sum(axis=1)  # Sum of each row (true label)
+            mcm[i] = (mcm[i].T / row_sum * 1.0).T # Normalize per row
+            mcm[i] = mcm[i].astype(float)
 
     # Plotting the confusion matrix
     #fig, axes = plt.subplots(1, len(labels), figsize=(20, 5))
@@ -573,8 +646,8 @@ def plot_confusion_matrix(y_true, y_pred, title):
             if n >= len(labels):
                 plt.delaxes(axs[i,j])
                 continue
-            sns.heatmap(mcm[n], annot=True, fmt='d', cmap="Blues", ax=axs[i,j], cbar=False,
-                        xticklabels=["Pred False", "Pred True"], yticklabels=["True False", "True True"])
+            sns.heatmap(mcm[n], annot=True, fmt=f'{fmt}', cmap="Blues", ax=axs[i,j], cbar=False,
+                        xticklabels=["Negative", "Positive"], yticklabels=["Negative", "Positive"])
             axs[i,j].set_title(f'Confusion Matrix for {labels[n]}')
             axs[i,j].set_xlabel('Predicted')
             axs[i,j].set_ylabel('True')
@@ -597,7 +670,7 @@ def convert_label_to_preds(label):
     return preds
 
 
-def plot_confusion_matrix_from_csv_file(filename, true_col_name='true_labels', pred_col_name='label', title="Confusion Matrix", prelim=False):
+def plot_confusion_matrix_from_csv_file(filename, true_col_name='true_labels', pred_col_name='label', title="Confusion Matrix", prelim=False, normalize=True):
     df = pd.read_csv(filename)
     labels = df[true_col_name].tolist()
     y_true = []
@@ -611,7 +684,7 @@ def plot_confusion_matrix_from_csv_file(filename, true_col_name='true_labels', p
     for label in labels:
         y_pred.append(convert_label_to_preds(label))
 
-    plot_confusion_matrix(y_true, y_pred, title=title)
+    plot_confusion_matrix(y_true, y_pred, title=title, normalize=normalize)
 
 
 
@@ -688,7 +761,7 @@ def plot_3d(array, filename, title):
     x = np.linspace(1, array.shape[1], array.shape[1])
     for z in range(1,array.shape[0]+1):
         y = array[z-1,:]
-        ax.plot(x, y, z, zdir='y')
+        ax.plot(x, y, z, zdir='y', color='lightblue')
 
     ax.set_xlabel("Timestep")
     ax.set_ylabel("Channel")

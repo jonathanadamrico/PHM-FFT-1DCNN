@@ -151,15 +151,13 @@ class EarlyStopping:
     
 
 
-class CNNFeatureExtractor(nn.Module):
+'''class CNNFeatureExtractor_outdated(nn.Module):
     def __init__(self, input_channels, input_length):
-        super(CNNFeatureExtractor, self).__init__()
+        super(CNNFeatureExtractor_outdated, self).__init__()
         self.conv1 = nn.Conv1d(input_channels, 128, kernel_size=3, stride=1, padding=1)
-        #self.bnorm1 = nn.BatchNorm1d(128)
         self.relu1 = nn.ReLU()
         
         self.conv2 = nn.Conv1d(128, 64, kernel_size=3, stride=1, padding=1)
-        #self.bnorm2 = nn.BatchNorm1d(64)
         self.relu2 = nn.ReLU()
         self.dropout = nn.Dropout(p=0.55)
         self.pool1 = nn.MaxPool1d(kernel_size=2, stride=2) 
@@ -170,7 +168,48 @@ class CNNFeatureExtractor(nn.Module):
         x = self.dropout(x)
         x = self.pool1(x)
         
-        return x 
+        return x '''
+
+
+
+class CNNFeatureExtractor(nn.Module):
+    def __init__(self, input_channels, input_length):
+        super(CNNFeatureExtractor, self).__init__()
+        self.conv1 = nn.Conv1d(input_channels, 64, kernel_size=9, stride=1, padding=1)
+        self.relu1 = nn.ReLU()
+        self.pool1 = nn.MaxPool1d(kernel_size=4, stride=2)
+        self.bnorm1 = nn.BatchNorm1d(64)
+
+        self.conv2 = nn.Conv1d(64, 128, kernel_size=9, stride=1, padding=1)
+        self.relu2 = nn.ReLU()
+        self.pool2 = nn.MaxPool1d(kernel_size=4, stride=2)
+        self.bnorm2 = nn.BatchNorm1d(128)
+
+        self.conv3 = nn.Conv1d(128, 256, kernel_size=9, stride=1, padding=1)
+        self.relu3 = nn.ReLU()
+        self.bnorm3 = nn.BatchNorm1d(256)
+        self.pool3 = nn.AdaptiveAvgPool1d(128)
+
+        #self.fc1 = nn.Linear(128, 60)
+        #self.tanh1 = nn.Tanh()
+
+    def forward(self, x):
+        x = self.relu1(self.conv1(x))
+        x = self.pool1(x)
+        x = self.bnorm1(x)
+
+        x = self.relu2(self.conv2(x))
+        x = self.pool2(x)
+        x = self.bnorm2(x)
+
+        x = self.relu3(self.conv3(x))
+        x = self.bnorm3(x)
+        x = self.pool3(x)
+
+        #x = self.fc1(x)
+        #x = self.tanh1(x)
+
+        return x
 
 
 '''class AutoencoderFC(nn.Module):
@@ -263,9 +302,9 @@ class Classifier(nn.Module):
         return self.fc(x)
     
 
-class ConvAutoencoder(nn.Module):
+'''class ConvAutoencoder_outdated(nn.Module):
     def __init__(self, input_channels, input_length, latent_dim):
-        super(ConvAutoencoder, self).__init__()
+        super(ConvAutoencoder_outdated, self).__init__()
 
         # Encoder 
         self.encoder = nn.Sequential(
@@ -293,10 +332,65 @@ class ConvAutoencoder(nn.Module):
         # Pass through the encoder and decoder
         latent = self.encoder(x)
         x = self.decoder(latent)
+        return x, latent'''
+
+
+
+
+
+
+
+class ConvAutoencoder(nn.Module):
+    def __init__(self, input_channels, input_length, latent_dim):
+        super(ConvAutoencoder, self).__init__()
+
+        # Encoder 
+        self.encoder = nn.Sequential(
+            nn.Conv1d(input_channels, 64, kernel_size=9, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool1d(kernel_size=4, stride=2),
+            nn.BatchNorm1d(64),
+
+            nn.Conv1d(64, 128, kernel_size=9, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool1d(kernel_size=4, stride=2),
+            nn.BatchNorm1d(128),
+
+            nn.Conv1d(128, 256, kernel_size=9, stride=1, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm1d(256),
+            nn.AdaptiveAvgPool1d(128)
+        )
+        
+        # Decoder
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose1d(256, 128, kernel_size=9, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Upsample(size=8000-9, mode='linear'),  # Adjusting to the target length
+            nn.BatchNorm1d(128),
+
+            nn.ConvTranspose1d(128, 64, kernel_size=9, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2, mode='linear'),  # Inverse of MaxPool
+            nn.BatchNorm1d(64),
+
+            nn.ConvTranspose1d(64, input_channels, kernel_size=9, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2, mode='linear'),  # Inverse of MaxPool
+            nn.BatchNorm1d(input_channels),
+        )        
+
+    def forward(self, x):
+        # Pass through the encoder and decoder
+        latent = self.encoder(x)
+        x = self.decoder(latent)
+
         return x, latent
 
 
-# Define the Encoder and Decoder for the VAE
+
+
+'''# Define the Encoder and Decoder for the VAE
 class VAE(nn.Module):
     def __init__(self, input_dim, latent_dim):
         super(VAE, self).__init__()
@@ -332,11 +426,11 @@ class VAE(nn.Module):
         mu, log_var = self.encode(x)
         z = self.reparameterize(mu, log_var)
         reconstructed = self.decode(z)
-        return reconstructed, mu, log_var
+        return reconstructed, mu, log_var'''
     
 
 
-# Define the Encoder and Decoder for the VAE
+'''# Define the Encoder and Decoder for the VAE
 class DeepVAE(nn.Module):
     def __init__(self, input_dim, latent_dim):
         super(DeepVAE, self).__init__()
@@ -377,5 +471,5 @@ class DeepVAE(nn.Module):
         z = self.reparameterize(mu, log_var)
         reconstructed = self.decode(z)
         return reconstructed, mu, log_var
-
+'''
 
