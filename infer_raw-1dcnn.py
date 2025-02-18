@@ -16,7 +16,7 @@ import torch.nn as nn
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 from utils.functions import *
-from utils.classes import ConvAutoencoder, Classifier
+from utils.classes import CNNFeatureExtractor, Classifier
 
 TRAIN_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Training data"
 TEST_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Test data"
@@ -137,16 +137,15 @@ if anomaly_type in component_fault['leftaxlebox']:
 if anomaly_type in component_fault['rightaxlebox']:
     n_features = 9
 
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-latent_dim = 128
+
 n_timesteps = n_datapoints // 2
-flatten_size = 256 * 128 #1022208 #latent_dim * n_timesteps
+cnn_output_size = 256 * 128 #batch_size * n_timesteps
 
-autoencoder = ConvAutoencoder(n_features, n_timesteps, latent_dim).to(device)
-autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_{anomaly_type}.pth', weights_only=False, map_location=device))
+cnn = CNNFeatureExtractor(n_features, n_timesteps).to(device)
+cnn.load_state_dict(torch.load('saved_models'+'/'+f'cnn_{anomaly_type}.pth', weights_only=False, map_location=device))
 
-classifier = Classifier(latent_dim=flatten_size).to(device)
+classifier = Classifier(latent_dim=cnn_output_size).to(device)
 classifier.load_state_dict(torch.load('saved_models'+'/'+f'classifier_{anomaly_type}.pth', map_location=device, weights_only=False))
 
 predictions_prelim = []
@@ -159,11 +158,9 @@ for n_sample in range(1,103):
         df = pd.DataFrame()
         for component in components:
             data_df = pd.read_csv(f"{TEST_DIR}/{sample_n}/data_{component}.csv")
-            # Calculate FFT
-            data_df, _ = fft_preprocessing(data_df, fs=64000)
             df = pd.concat([df, data_df], axis=1)
         df = reduce_mem_usage(df, verbose=False)
-        X_test = df_to_numpy(df, 1, 21, fs//2)
+        X_test = df_to_numpy(df, 1, 21, fs)
         speed_wc = get_speed_wc_arr(X_test)
         X_test, _ = normalize_data(X_test, speed_wc, min_max_values)
         np.save(f"Quick imports/X_holdout_fft_{sample_n}.npy", X_test)
@@ -172,17 +169,12 @@ for n_sample in range(1,103):
     X_test = torch.tensor(X_test, dtype=torch.float32).to(device)
 
     # Evaluation
-    autoencoder.eval()
+    cnn.eval()
     classifier.eval()
     with torch.no_grad():
-
-        # Forward pass
-        decoder_output, latent = autoencoder(X_test)
-
-        # flatten the latent then input to the classifier
-        flattened_latent = latent.view(latent.size(0), -1) 
-        preds = classifier(flattened_latent).cpu().numpy()
-
+        cnn_features = cnn(X_test)
+        inputs = cnn_features.view(cnn_features.size(0), -1)
+        preds = classifier(inputs).cpu().numpy()
     predictions_prelim.append(preds[0][0])
 
 # Calculate test performance
@@ -223,12 +215,10 @@ for n_sample in tqdm(range(1,len(os.listdir(FINAL_TEST_DIR))+1)):
         df = pd.DataFrame()
         for component in components:
             data_df = pd.read_csv(f"{FINAL_TEST_DIR}/{sample_n}/data_{component}.csv")
-            # Calculate FFT
-            data_df, _ = fft_preprocessing(data_df, fs=64000)
             df = pd.concat([df, data_df], axis=1)
-        n_samples = len(df) // (fs//2)
+        n_samples = len(df) // (fs)
         df = reduce_mem_usage(df, verbose=False)
-        X_test1 = df_to_numpy(df, n_samples, 21, fs//2)
+        X_test1 = df_to_numpy(df, n_samples, 21, fs)
         speed_wc = get_speed_wc_arr(X_test1)
         X_test1, _ = normalize_data(X_test1, speed_wc, min_max_values)
         np.save(f"Quick imports/X_test1_fft_{sample_n}.npy", X_test1)
@@ -238,13 +228,10 @@ for n_sample in tqdm(range(1,len(os.listdir(FINAL_TEST_DIR))+1)):
 
     # Evaluation
     with torch.no_grad():
-        # Forward pass
-        decoder_output, latent = autoencoder(X_test1)
-
-        # flatten the latent then input to the classifier
-        flattened_latent = latent.view(latent.size(0), -1) 
-        preds = classifier(flattened_latent).cpu().numpy()
-        
+        preds = 0
+        cnn_features = cnn(X_test1)
+        inputs = cnn_features.view(cnn_features.size(0), -1)
+        preds = classifier(inputs).cpu().numpy()
     samples.append(sample_n)
     predictions_final.append(preds)
 
@@ -256,8 +243,8 @@ final_df = pd.DataFrame({
 final_df.to_csv(f"preds_1dcnn_ae_final/preds_{type_to_fault[anomaly_type]}_1dcnn.csv", index=False)
 
 # Compute time complexity in FLOPS
-params1, flops1 = get_model_complexity_info(autoencoder, (n_features, n_timesteps), as_strings=True, print_per_layer_stat=False)
+params1, flops1 = get_model_complexity_info(cnn, (n_features, n_timesteps), as_strings=True, print_per_layer_stat=False)
 print(f"Params: {params1}, FLOPs: {flops1}")
 
-params2, flops2 = get_model_complexity_info(classifier, (1, flatten_size), as_strings=True, print_per_layer_stat=False)
+params2, flops2 = get_model_complexity_info(classifier, (1, 256 * 128), as_strings=True, print_per_layer_stat=False)
 print(f"Params: {params2}, FLOPs: {flops2}")

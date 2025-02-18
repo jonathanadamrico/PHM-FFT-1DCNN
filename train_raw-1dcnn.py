@@ -8,10 +8,12 @@ import gc
 import pickle
 import umap
 
+from ptflops import get_model_complexity_info
+
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, IncrementalPCA
 from sklearn.manifold import TSNE
 
 import torch
@@ -24,15 +26,12 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from utils.functions import *
 from utils.classes import CNNFeatureExtractor, Classifier
 
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+#os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 TRAIN_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Training data"
 TEST_DIR = "Preliminary stage/Data_Pre Stage/Data_Pre Stage/Data_Pre Stage/Test data"
 FINAL_TRAIN_DIR = "Data_Final_Stage/Data_Final_Stage/Training"
 FINAL_TEST_DIR = "Data_Final_Stage/Data_Final_Stage/Test_Final_round8/Test"
-
-FFT_TRAIN_DIR = "Preliminary state/Data_Pre Stage/Data_Pre Stage/Training data"
-FFT_TRAIN_FINAL_DIR = "Data_Final_Stage/FFT/Training"
 
 load_model = False
 fs = 64000
@@ -41,6 +40,7 @@ print(anomaly_type)
 SEED = 42
 np.random.seed(SEED)
 torch.manual_seed(SEED)
+
 
 component_fault = {
 "motor": ["TYPE1","TYPE2","TYPE3","TYPE4"],
@@ -139,19 +139,55 @@ def load_data_with_cv():
         if prelim_final == 'prelim':
             fault_type = full_fault_to_type[label]
             if i == 0:
-                data_arr_Xtrain = np.load(f"{FFT_TRAIN_DIR}/{fault_type}/{sample_n}.npy")
+
+                df = pd.DataFrame()
+                for component in components:
+                    data_df = pd.read_csv(f"{TRAIN_DIR}/{fault_type}/{sample_n}/data_{component}.csv")
+                    df = pd.concat([df, data_df], axis=1)
+                
+                n_samples = len(df) // (fs)
+                n_features = len(df.columns)
+                df = reduce_mem_usage(df, verbose=False)
+                data_arr_Xtrain = df_to_numpy(df, n_samples, n_features, fs)
                 data_ytrain.extend([binary_label]*len(data_arr_Xtrain))
             else:
-                temp_arr_Xtrain = np.load(f"{FFT_TRAIN_DIR}/{fault_type}/{sample_n}.npy")
+
+                df = pd.DataFrame()
+                for component in components:
+                    data_df = pd.read_csv(f"{TRAIN_DIR}/{fault_type}/{sample_n}/data_{component}.csv")
+                    df = pd.concat([df, data_df], axis=1)
+                
+                n_samples = len(df) // (fs)
+                n_features = len(df.columns)
+                df = reduce_mem_usage(df, verbose=False)
+                temp_arr_Xtrain = df_to_numpy(df, n_samples, n_features, fs)
                 data_ytrain.extend([binary_label]*len(temp_arr_Xtrain))
                 data_arr_Xtrain = np.vstack((data_arr_Xtrain, temp_arr_Xtrain))
 
         elif prelim_final == 'final':
             if i == 0:
-                data_arr_Xtrain = np.load(f"{FFT_TRAIN_FINAL_DIR}/{label}/{sample_n}.npy")
+                df = pd.DataFrame()
+                for component in components:
+                    data_df = pd.read_csv(f"{FINAL_TRAIN_DIR}/{label}/{sample_n}/data_{component}.csv")
+                    df = pd.concat([df, data_df], axis=1)
+
+                df = reduce_mem_usage(df, verbose=False)
+                n_samples = len(df) // (fs)
+                n_features = len(df.columns)
+                
+                data_arr_Xtrain = df_to_numpy(df, n_samples, n_features, fs)
                 data_ytrain.extend([binary_label]*len(data_arr_Xtrain))
             else:
-                temp_arr_Xtrain = np.load(f"{FFT_TRAIN_FINAL_DIR}/{label}/{sample_n}.npy")
+                df = pd.DataFrame()
+                for component in components:
+                    data_df = pd.read_csv(f"{FINAL_TRAIN_DIR}/{label}/{sample_n}/data_{component}.csv")
+                    df = pd.concat([df, data_df], axis=1)
+
+                df = reduce_mem_usage(df, verbose=False)
+                n_samples = len(df) // (fs)
+                n_features = len(df.columns)
+                
+                temp_arr_Xtrain = df_to_numpy(df, n_samples, n_features, fs)
                 data_ytrain.extend([binary_label]*len(temp_arr_Xtrain))
                 data_arr_Xtrain = np.vstack((data_arr_Xtrain, temp_arr_Xtrain))
 
@@ -162,24 +198,63 @@ def load_data_with_cv():
         label = cv_Xval.loc[i, 'label']
         sample_n = cv_Xval.loc[i, 'sample']
         binary_label = cv_yval.iloc[i]
-    
         
         if prelim_final == 'prelim':
             fault_type = full_fault_to_type[label]
             if i == 0:
-                data_arr_Xval = np.load(f"{FFT_TRAIN_DIR}/{fault_type}/{sample_n}.npy")
+
+                df = pd.DataFrame()
+                for component in components:
+                    data_df = pd.read_csv(f"{TRAIN_DIR}/{fault_type}/{sample_n}/data_{component}.csv")
+                    df = pd.concat([df, data_df], axis=1)
+                
+                n_samples = len(df) // (fs)
+                n_features = len(df.columns)
+                df = reduce_mem_usage(df, verbose=False)
+                data_arr_Xval = df_to_numpy(df, n_samples, n_features, fs)
                 data_yval.extend([binary_label]*len(data_arr_Xval))
+
             else:
-                temp_arr_Xval = np.load(f"{FFT_TRAIN_DIR}/{fault_type}/{sample_n}.npy")
+
+                df = pd.DataFrame()
+                for component in components:
+                    data_df = pd.read_csv(f"{TRAIN_DIR}/{fault_type}/{sample_n}/data_{component}.csv")
+                    df = pd.concat([df, data_df], axis=1)
+                
+                n_samples = len(df) // (fs)
+                n_features = len(df.columns)
+                df = reduce_mem_usage(df, verbose=False)
+                temp_arr_Xval = df_to_numpy(df, n_samples, n_features, fs)
                 data_yval.extend([binary_label]*len(temp_arr_Xval))
                 data_arr_Xval = np.vstack((data_arr_Xval, temp_arr_Xval))
 
         elif prelim_final == 'final':
             if i == 0:
-                data_arr_Xval = np.load(f"{FFT_TRAIN_FINAL_DIR}/{label}/{sample_n}.npy")
+
+                df = pd.DataFrame()
+                for component in components:
+                    data_df = pd.read_csv(f"{FINAL_TRAIN_DIR}/{label}/{sample_n}/data_{component}.csv")
+                    df = pd.concat([df, data_df], axis=1)
+
+                df = reduce_mem_usage(df, verbose=False)
+                n_samples = len(df) // (fs)
+                n_features = len(df.columns)
+                
+                data_arr_Xval = df_to_numpy(df, n_samples, n_features, fs)
                 data_yval.extend([binary_label]*len(data_arr_Xval))
+
             else:
-                temp_arr_Xval = np.load(f"{FFT_TRAIN_FINAL_DIR}/{label}/{sample_n}.npy")
+
+                df = pd.DataFrame()
+                for component in components:
+                    data_df = pd.read_csv(f"{FINAL_TRAIN_DIR}/{label}/{sample_n}/data_{component}.csv")
+                    df = pd.concat([df, data_df], axis=1)
+
+                df = reduce_mem_usage(df, verbose=False)
+                n_samples = len(df) // (fs)
+                n_features = len(df.columns)
+                
+                temp_arr_Xval = df_to_numpy(df, n_samples, n_features, fs)
                 data_yval.extend([binary_label]*len(temp_arr_Xval))
                 data_arr_Xval = np.vstack((data_arr_Xval, temp_arr_Xval))
 
@@ -234,7 +309,7 @@ print(X_train.shape, y_train.shape, X_val.shape, y_val.shape)
 #plot_3d(X_val[2,:,:], filename='X_val_fft_scaled3d.png', title='X_val_fft_scaled')
 
 # fit and evaluate a model using pytorch
-def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
+def train_cnn_classifier(X_train, y_train, X_val, y_val):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(device, torch.cuda.get_device_name(0))
     verbose, epochs, batch_size = 1, 100, 32
@@ -271,7 +346,7 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     # Loss and optimizer for the classifier
     pos_weight = class_weights[1] / class_weights[0]  # Calculate the positive weight
     classifier_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    cnn_optimizer = optim.Adam(list(cnn.parameters()), lr=1e-4)
+    cnn_optimizer = optim.Adam(list(cnn.parameters()), lr=1e-3)
     classifier_optimizer = optim.Adam(list(classifier.parameters()), lr=1e-3)
     scheduler = ReduceLROnPlateau(classifier_optimizer, 'min', patience=5, factor=0.5)
 
@@ -366,33 +441,34 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     #           
     ####################
 
-    ''' del classifier, history
+    '''del classifier, history
     gc.collect()
 
     # Visualize latent space via tSNE
     latent_2d_tsne_all = []
     latent_2d_umap_all = []
-    X_combined = torch.cat((X_val, X_train), dim=0)
-    y_combined = torch.cat((y_val, y_train), dim=0)
 
-    # Plot the positives last for better visibility
-    X_train_1 = X_combined[y_combined.flatten() == 1]
-    y_train_1 = y_combined[y_combined.flatten() == 1]
+    X_combined = X_train #torch.cat((X_val, X_train), dim=0)
+    y_combined = y_train #torch.cat((y_val, y_train), dim=0)
 
-    X_train_0 = X_combined[y_combined.flatten() == 0]
-    y_train_0 = y_combined[y_combined.flatten() == 0]
+    # Get the sorting indices based on y_combined
+    sorted_indices = torch.argsort(y_combined, dim=0)
 
-    X_combined = torch.cat((X_train_0, X_train_1), dim=0)
-    y_combined = torch.cat((y_train_0, y_train_1), dim=0)
+    # Rearrange the tensors using the sorted indices
+    X_combined = X_combined[sorted_indices].squeeze(dim=1)
+    y_combined = y_combined[sorted_indices].squeeze(dim=2)
+
+    n_batches = 32  # Define the number of batches
 
     pca = PCA(n_components=batch_size)  # Reduce to smaller dimensions
-    reducer = umap.UMAP(n_components=2, n_neighbors=5, min_dist=1.0, metric='cosine')
+    reducer = umap.UMAP(n_components=2, n_neighbors=5, min_dist=0.5, metric='cosine')
     for i in range(0, len(X_combined), batch_size):
         batch_X = X_combined[i:i+batch_size]
         batch_y = y_combined[i:i+batch_size]
-        if len(batch_X) < batch_size:
-            break
+        #if len(batch_X) < batch_size:
+        #    break
         # Forward pass
+
         latent = cnn(batch_X)
 
         # flatten the latent then input to the classifier
@@ -402,11 +478,11 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
             features_reduced = pca.fit_transform(flattened_latent.detach().cpu().numpy())  
         else:
             features_reduced = pca.transform(flattened_latent.detach().cpu().numpy()) 
-
+            
         # TSNE    
-        tsne = TSNE(n_components=2, perplexity=15)
-        latent_2d_tsne = tsne.fit_transform(features_reduced)
-        latent_2d_tsne_all.append(latent_2d_tsne)
+        #tsne = TSNE(n_components=2, perplexity=15, max_iter=250)
+        #latent_2d_tsne = tsne.fit_transform(features_reduced)
+        #latent_2d_tsne_all.append(latent_2d_tsne)
 
         # UMAP
         if i == 0:
@@ -426,7 +502,7 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     # Replace numerical class labels with textual labels
     df['label'] = df['label'].map({0.0: 'Normal', 1.0: 'Anomaly'})
     #df.to_csv('parallel_coordinates.csv', index=False)
-    pd.plotting.parallel_coordinates(df, 'label', color=('blue','red'), alpha=0.05)
+    pd.plotting.parallel_coordinates(df, 'label', color=('blue','red'), alpha=0.1)
     plt.title(f'Parallel Coordinates - {anomaly_type}')
     plt.xlabel("Dimensions")
     plt.xticks(rotation=45)
@@ -434,17 +510,20 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
     legend_handle1 = plt.Line2D([0], [0], color='blue', label='Normal')
     legend_handle2 = plt.Line2D([0], [0], color='red', label='Anomaly')
     plt.legend(handles=[legend_handle1, legend_handle2])
-    plt.savefig(f'latent_space_figs/parallel_coord_{anomaly_type}.png', dpi=300)
+    plt.savefig(f'latent_space_figs/parallel_coord_{anomaly_type}_raw.png', dpi=300)
     plt.clf()
 
-    latent_2d_tsne_all = np.concatenate(latent_2d_tsne_all, axis=0)
+    #latent_2d_tsne_all = np.concatenate(latent_2d_tsne_all, axis=0)
     latent_2d_umap_all = np.concatenate(latent_2d_umap_all, axis=0)
     
-    plot_latent_space(latent_2d_tsne_all, y_combined[:len(latent_2d_tsne_all)].squeeze().cpu().numpy(), f'latent_space_figs/tsne_{anomaly_type}.png', f'Feature Space - {anomaly_type}')
-    plot_latent_space(latent_2d_umap_all, y_combined[:len(latent_2d_umap_all)].squeeze().cpu().numpy(), f'latent_space_figs/umap_{anomaly_type}.png', f'Feature Space - {anomaly_type}')
+    #plot_latent_space(latent_2d_tsne_all, y_combined[:len(latent_2d_tsne_all)].squeeze().cpu().numpy(), f'latent_space_figs/tsne_{anomaly_type}_raw.png', f'Feature Space - {anomaly_type}')
+    plot_latent_space(latent_2d_umap_all, y_combined[:len(latent_2d_umap_all)].squeeze().cpu().numpy(), f'latent_space_figs/umap_{anomaly_type}_raw.png', f'Feature Space - {anomaly_type}')
 
-    del latent_2d_tsne_all, latent_2d_tsne, flattened_latent
+    #del latent_2d_tsne_all, latent_2d_tsne, 
+    del flattened_latent, latent_2d_umap_all, df
     gc.collect()'''
+
+ 
 
     #############
     #           #
@@ -514,5 +593,5 @@ def train_autoencoder_classifier(X_train, y_train, X_val, y_val):
         z_metric = 0.4*accuracy + 0.2*precision + 0.2*recall + 0.2*f1
         print(f"Val | Accuracy: {accuracy:.4f} | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f} | Z: {z_metric:.4f}")
 
-train_autoencoder_classifier(X_train, y_train, X_val, y_val)
+train_cnn_classifier(X_train, y_train, X_val, y_val)
 

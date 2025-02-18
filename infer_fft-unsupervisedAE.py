@@ -105,6 +105,37 @@ final_train_labels = [item for item in os.listdir(FINAL_TRAIN_DIR) if os.path.is
 test_labels = pd.read_csv("Preliminary stage/Test_Labels_prelim.csv")
 min_max_values = np.load(f"saved_scalers/{anomaly_type}_min_max_values.npy")
 
+# Data scaling
+'''scalers = []
+for n_scaler in range(n_features):
+    scaler = pickle.load(open(f'saved_scalers/scaler_ae_{anomaly_type}_{n_scaler}', 'rb'))
+    scalers.append(scaler)'''
+
+#X_train = np.load(f"Quick imports/X_train_raw_{anomaly_type}.npy")
+#train_speed_wc = get_speed_wc_arr(X_train)
+#condition_means, condition_stds = compute_condition_stats(X_train, train_speed_wc)
+#scalers = np.load(f'saved_scalers/scaler_ae_{anomaly_type}.npy')
+
+ae_thresholds = {
+    "TYPE1":0.7,
+    "TYPE2":1.0,
+    "TYPE3":0.76,
+    "TYPE4":0.65,
+    "TYPE5":0.93,
+    "TYPE6":0.99,
+    "TYPE7":0.99,
+    "TYPE8":0.84,
+    "TYPE9":0.98,
+    "TYPE10":0.37,
+    "TYPE11":0.44,
+    "TYPE12":0.99,
+    "TYPE13":0.8,
+    "TYPE14":0.91,
+    "TYPE15":0.84,
+    "TYPE16":0.78,
+    "TYPE17":0.94,
+}
+
 #======================#
 #
 #    TEST EVALUATION
@@ -141,13 +172,10 @@ if anomaly_type in component_fault['rightaxlebox']:
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 latent_dim = 128
 n_timesteps = n_datapoints // 2
-flatten_size = 256 * 128 #1022208 #latent_dim * n_timesteps
 
 autoencoder = ConvAutoencoder(n_features, n_timesteps, latent_dim).to(device)
 autoencoder.load_state_dict(torch.load('saved_models'+'/'+f'autoencoder_{anomaly_type}.pth', weights_only=False, map_location=device))
-
-classifier = Classifier(latent_dim=flatten_size).to(device)
-classifier.load_state_dict(torch.load('saved_models'+'/'+f'classifier_{anomaly_type}.pth', map_location=device, weights_only=False))
+autoencoder_criterion = nn.MSELoss()
 
 predictions_prelim = []
 for n_sample in range(1,103):
@@ -168,22 +196,24 @@ for n_sample in range(1,103):
         X_test, _ = normalize_data(X_test, speed_wc, min_max_values)
         np.save(f"Quick imports/X_holdout_fft_{sample_n}.npy", X_test)
 
+    #for n_scaler in range(X_test.shape[1]):
+    #    min_val, max_val = scalers[n_scaler]
+    #    X_test[:,n_scaler,:] = (X_test[:,n_scaler,:] - min_val) / (max_val - min_val)
+    
     X_test = remove_channels(X_test)
     X_test = torch.tensor(X_test, dtype=torch.float32).to(device)
 
     # Evaluation
     autoencoder.eval()
-    classifier.eval()
     with torch.no_grad():
 
         # Forward pass
         decoder_output, latent = autoencoder(X_test)
+        reconstruction_errors = autoencoder_criterion(X_test, decoder_output)
+        reconstruction_errors = reconstruction_errors.cpu().numpy()
+        preds = (reconstruction_errors > ae_thresholds[anomaly_type]).astype(int)
 
-        # flatten the latent then input to the classifier
-        flattened_latent = latent.view(latent.size(0), -1) 
-        preds = classifier(flattened_latent).cpu().numpy()
-
-    predictions_prelim.append(preds[0][0])
+    predictions_prelim.append(preds)
 
 # Calculate test performance
 true = (test_labels["FaultCode"] == anomaly_type).astype(int).to_numpy()
@@ -204,6 +234,8 @@ df = pd.DataFrame({"sample":test_labels["Sample Number"],
                    })
 
 df.to_csv(f"preds_1dcnn/preds_{type_to_fault[anomaly_type]}_1dcnn.csv", index=False)
+
+del X_test
 
 #=====================##
 #
@@ -233,6 +265,10 @@ for n_sample in tqdm(range(1,len(os.listdir(FINAL_TEST_DIR))+1)):
         X_test1, _ = normalize_data(X_test1, speed_wc, min_max_values)
         np.save(f"Quick imports/X_test1_fft_{sample_n}.npy", X_test1)
 
+    #for n_scaler in range(X_test1.shape[1]):
+    #    min_val, max_val = scalers[n_scaler]
+    #    X_test1[:,n_scaler,:] = (X_test1[:,n_scaler,:] - min_val) / (max_val - min_val)
+    
     X_test1 = remove_channels(X_test1)
     X_test1 = torch.tensor(X_test1, dtype=torch.float32).to(device)
 
@@ -240,10 +276,9 @@ for n_sample in tqdm(range(1,len(os.listdir(FINAL_TEST_DIR))+1)):
     with torch.no_grad():
         # Forward pass
         decoder_output, latent = autoencoder(X_test1)
-
-        # flatten the latent then input to the classifier
-        flattened_latent = latent.view(latent.size(0), -1) 
-        preds = classifier(flattened_latent).cpu().numpy()
+        reconstruction_errors = autoencoder_criterion(X_test1, decoder_output)
+        reconstruction_errors = reconstruction_errors.cpu().numpy()
+        preds = (reconstruction_errors > ae_thresholds[anomaly_type]).astype(int)
         
     samples.append(sample_n)
     predictions_final.append(preds)
@@ -255,9 +290,7 @@ final_df = pd.DataFrame({
 
 final_df.to_csv(f"preds_1dcnn_ae_final/preds_{type_to_fault[anomaly_type]}_1dcnn.csv", index=False)
 
+
 # Compute time complexity in FLOPS
 params1, flops1 = get_model_complexity_info(autoencoder, (n_features, n_timesteps), as_strings=True, print_per_layer_stat=False)
 print(f"Params: {params1}, FLOPs: {flops1}")
-
-params2, flops2 = get_model_complexity_info(classifier, (1, flatten_size), as_strings=True, print_per_layer_stat=False)
-print(f"Params: {params2}, FLOPs: {flops2}")
