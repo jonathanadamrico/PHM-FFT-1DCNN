@@ -5,7 +5,19 @@ Fault diagnosis prevents train disruptions by ensuring the stability and reliabi
 
 ![FFT-1DCNN framework](https://github.com/user-attachments/assets/07383c10-c6af-4277-b23b-cf7433aecad1)
 
-**Paper Citation**: Rico, J. A., Raghavan, N., & Jayavelu, S. (2025). Compound Fault Diagnosis for Train Transmission Systems Using Deep Learning with Fourier-enhanced Representation. arXiv preprint arXiv:2504.07155.
+**Paper Citation**: J. A. Rico, N. Raghavan and S. Jayavelu, "Compound Fault Diagnosis for Train Transmission Systems Using Deep Learning with Fourier-enhanced Representation," 2025 IEEE International Conference on Prognostics and Health Management (ICPHM), Denver, CO, USA, 2025, pp. 1-8, doi: 10.1109/ICPHM65385.2025.11062058.
+
+
+
+```bibtex
+@INPROCEEDINGS{rico2025cfd,
+  author={Rico, Jonathan Adam and Raghavan, Nagarajan and Jayavelu, Senthilnath},
+  booktitle={2025 IEEE International Conference on Prognostics and Health Management (ICPHM)}, 
+  title={Compound Fault Diagnosis for Train Transmission Systems Using Deep Learning with Fourier-enhanced Representation}, 
+  year={2025},
+  pages={1-8},
+  doi={10.1109/ICPHM65385.2025.11062058}}
+```
 
 **Dataset**: https://2024.icphm.org/datachallenge/
 
