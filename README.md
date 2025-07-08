@@ -19,7 +19,7 @@ Fault diagnosis prevents train disruptions by ensuring the stability and reliabi
   doi={10.1109/ICPHM65385.2025.11062058}}
 ```
 
-**Dataset**: https://2024.icphm.org/datachallenge/
+**Dataset**: https://2024.icphm.org/
 
 **Dataset Citation**: Ding, A., Qin, Y., Wang, B., Guo, L., Jia, L., & Cheng, X. (2024). Evolvable graph neural network for system-level incremental fault diagnosis of train transmission systems. Mechanical Systems and Signal Processing, 210, 111175.
 
